@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"runtime"
+	"sort"
 	"strings"
 	"talisman/detector/severity"
 	"talisman/gitrepo"
@@ -18,6 +19,13 @@ import (
 
 	"github.com/olekukonko/tablewriter"
 )
+
+// Provenance types are re-exported here because the report lives in this
+// package and callers commonly inspect the chain through the result object.
+type BlobProvenance = gitrepo.BlobProvenance
+type PathProvenance = gitrepo.PathProvenance
+type ScanStatus = gitrepo.ScanStatus
+type Provenance = gitrepo.BlobProvenance
 
 type Details struct {
 	Category string            `json:"type"`
@@ -50,8 +58,11 @@ type ResultsSummary struct {
 // Currently, it keeps track of failures and ignored files.
 // The results are grouped by FilePath for easy reporting of all detected problems with individual files.
 type DetectionResults struct {
-	Summary ResultsSummary   `json:"summary"`
-	Results []ResultsDetails `json:"results"`
+	Summary    ResultsSummary   `json:"summary"`
+	Results    []ResultsDetails `json:"results"`
+	Provenance []gitrepo.BlobProvenance `json:"provenance,omitempty"`
+	ScanStatus *gitrepo.ScanStatus      `json:"scan_status,omitempty"`
+	CommitOrder map[string]int          `json:"-"`
 }
 
 func (r *DetectionResults) getResultDetailsForFilePath(fileName gitrepo.FilePath) *ResultsDetails {
@@ -66,10 +77,10 @@ func (r *DetectionResults) getResultDetailsForFilePath(fileName gitrepo.FilePath
 // NewDetectionResults is a new DetectionResults struct. It represents the pre-run state of a Detection run.
 func NewDetectionResults() *DetectionResults {
 	return &DetectionResults{
-		ResultsSummary{
+		Summary: ResultsSummary{
 			FailureTypes{0, 0, 0, 0, 0},
 		},
-		make([]ResultsDetails, 0),
+		Results: make([]ResultsDetails, 0),
 	}
 }
 
@@ -85,17 +96,22 @@ func (r *DetectionResults) Fail(filePath gitrepo.FilePath, category string, mess
 			for detailIndex := 0; detailIndex < len(r.Results[resultIndex].FailureList); detailIndex++ {
 				if strings.Compare(r.Results[resultIndex].FailureList[detailIndex].Category, category) == 0 && strings.Compare(r.Results[resultIndex].FailureList[detailIndex].Message, message) == 0 {
 					isEntryPresentForGivenCategoryAndMessage = true
-					r.Results[resultIndex].FailureList[detailIndex].Commits = append(r.Results[resultIndex].FailureList[detailIndex].Commits, commits...)
+					r.Results[resultIndex].FailureList[detailIndex].Commits = mergeCommits(r.Results[resultIndex].FailureList[detailIndex].Commits, commits)
 				}
 			}
 			if !isEntryPresentForGivenCategoryAndMessage {
-				r.Results[resultIndex].FailureList = append(r.Results[resultIndex].FailureList, Details{category, message, commits, severity})
+				r.Results[resultIndex].FailureList = append(r.Results[resultIndex].FailureList, Details{category, message, mergeCommits(nil, commits), severity})
 			}
 		}
 	}
 	if !isFilePresentInResults {
-		failureDetails := Details{category, message, commits, severity}
-		resultDetails := ResultsDetails{filePath, make([]Details, 0), make([]Details, 0), make([]Details, 0)}
+		failureDetails := Details{category, message, mergeCommits(nil, commits), severity}
+		resultDetails := ResultsDetails{
+			Filename:    filePath,
+			FailureList: make([]Details, 0),
+			WarningList: make([]Details, 0),
+			IgnoreList:  make([]Details, 0),
+		}
 		resultDetails.FailureList = append(resultDetails.FailureList, failureDetails)
 		r.Results = append(r.Results, resultDetails)
 	}
@@ -111,17 +127,22 @@ func (r *DetectionResults) Warn(filePath gitrepo.FilePath, category string, mess
 			for detailIndex := 0; detailIndex < len(r.Results[resultIndex].WarningList); detailIndex++ {
 				if strings.Compare(r.Results[resultIndex].WarningList[detailIndex].Category, category) == 0 && strings.Compare(r.Results[resultIndex].WarningList[detailIndex].Message, message) == 0 {
 					isEntryPresentForGivenCategoryAndMessage = true
-					r.Results[resultIndex].WarningList[detailIndex].Commits = append(r.Results[resultIndex].WarningList[detailIndex].Commits, commits...)
+					r.Results[resultIndex].WarningList[detailIndex].Commits = mergeCommits(r.Results[resultIndex].WarningList[detailIndex].Commits, commits)
 				}
 			}
 			if !isEntryPresentForGivenCategoryAndMessage {
-				r.Results[resultIndex].WarningList = append(r.Results[resultIndex].WarningList, Details{category, message, commits, severity})
+				r.Results[resultIndex].WarningList = append(r.Results[resultIndex].WarningList, Details{category, message, mergeCommits(nil, commits), severity})
 			}
 		}
 	}
 	if !isFilePresentInResults {
-		warningDetails := Details{category, message, commits, severity}
-		resultDetails := ResultsDetails{filePath, make([]Details, 0), make([]Details, 0), make([]Details, 0)}
+		warningDetails := Details{category, message, mergeCommits(nil, commits), severity}
+		resultDetails := ResultsDetails{
+			Filename:    filePath,
+			FailureList: make([]Details, 0),
+			WarningList: make([]Details, 0),
+			IgnoreList:  make([]Details, 0),
+		}
 		resultDetails.WarningList = append(resultDetails.WarningList, warningDetails)
 		r.Results = append(r.Results, resultDetails)
 	}
@@ -151,7 +172,12 @@ func (r *DetectionResults) Ignore(filePath gitrepo.FilePath, category string) {
 	}
 	if !isFilePresentInResults {
 		ignoreDetails := Details{category, "", make([]string, 0), severity.Low}
-		resultDetails := ResultsDetails{filePath, make([]Details, 0), make([]Details, 0), make([]Details, 0)}
+		resultDetails := ResultsDetails{
+			Filename:    filePath,
+			FailureList: make([]Details, 0),
+			WarningList: make([]Details, 0),
+			IgnoreList:  make([]Details, 0),
+		}
 		resultDetails.IgnoreList = append(resultDetails.IgnoreList, ignoreDetails)
 		r.Results = append(r.Results, resultDetails)
 	}
@@ -170,6 +196,106 @@ func (r *DetectionResults) updateResultsSummary(category string, decr bool) {
 		r.Summary.Types.Filename += val
 	case "filesize":
 		r.Summary.Types.Filesize += val
+	}
+}
+
+// mergeCommits combines commit lists without introducing duplicates.  The
+// first occurrence wins so callers can preserve git-log order.
+func mergeCommits(existing []string, additional []string) []string {
+	if len(existing) == 0 && len(additional) == 0 {
+		return existing
+	}
+	result := make([]string, 0, len(existing)+len(additional))
+	seen := make(map[string]struct{}, len(existing)+len(additional))
+	for _, commits := range [][]string{existing, additional} {
+		for _, commit := range commits {
+			if commit == "" {
+				continue
+			}
+			if _, ok := seen[commit]; ok {
+				continue
+			}
+			seen[commit] = struct{}{}
+			result = append(result, commit)
+		}
+	}
+	return result
+}
+
+func (r *DetectionResults) sortDetails(details []Details) {
+	for index := range details {
+		commits := mergeCommits(nil, details[index].Commits)
+		sort.SliceStable(commits, func(i, j int) bool {
+			leftOrder, leftKnown := r.CommitOrder[commits[i]]
+			rightOrder, rightKnown := r.CommitOrder[commits[j]]
+			if leftKnown && rightKnown {
+				return leftOrder < rightOrder
+			}
+			if leftKnown != rightKnown {
+				return leftKnown
+			}
+			return commits[i] < commits[j]
+		})
+		details[index].Commits = commits
+	}
+	sort.SliceStable(details, func(i, j int) bool {
+		if details[i].Category != details[j].Category {
+			return details[i].Category < details[j].Category
+		}
+		return details[i].Message < details[j].Message
+	})
+}
+
+// Sort normalizes the result so reports are stable across runs.  It also links
+// each result path back to the blob hashes in the provenance chain.
+func (r *DetectionResults) Sort() {
+	sort.SliceStable(r.Results, func(i, j int) bool {
+		return r.Results[i].Filename < r.Results[j].Filename
+	})
+
+	for index := range r.Results {
+		r.sortDetails(r.Results[index].FailureList)
+		r.sortDetails(r.Results[index].WarningList)
+		r.sortDetails(r.Results[index].IgnoreList)
+	}
+
+	sort.SliceStable(r.Provenance, func(i, j int) bool {
+		return r.Provenance[i].BlobHash < r.Provenance[j].BlobHash
+	})
+	for index := range r.Provenance {
+		sort.Strings(r.Provenance[index].Paths)
+		commits := mergeCommits(nil, r.Provenance[index].Commits)
+		sort.SliceStable(commits, func(i, j int) bool {
+			leftOrder, leftKnown := r.CommitOrder[commits[i]]
+			rightOrder, rightKnown := r.CommitOrder[commits[j]]
+			if leftKnown && rightKnown {
+				return leftOrder < rightOrder
+			}
+			if leftKnown != rightKnown {
+				return leftKnown
+			}
+			return commits[i] < commits[j]
+		})
+		r.Provenance[index].Commits = commits
+		r.Provenance[index].Paths = mergeCommits(nil, r.Provenance[index].Paths)
+		sort.SliceStable(r.Provenance[index].PathCommits, func(i, j int) bool {
+			return r.Provenance[index].PathCommits[i].Path < r.Provenance[index].PathCommits[j].Path
+		})
+		for pathIndex := range r.Provenance[index].PathCommits {
+			pathCommits := mergeCommits(nil, r.Provenance[index].PathCommits[pathIndex].Commits)
+			sort.SliceStable(pathCommits, func(i, j int) bool {
+				leftOrder, leftKnown := r.CommitOrder[pathCommits[i]]
+				rightOrder, rightKnown := r.CommitOrder[pathCommits[j]]
+				if leftKnown && rightKnown {
+					return leftOrder < rightOrder
+				}
+				if leftKnown != rightKnown {
+					return leftKnown
+				}
+				return pathCommits[i] < pathCommits[j]
+			})
+			r.Provenance[index].PathCommits[pathIndex].Commits = pathCommits
+		}
 	}
 }
 
@@ -193,7 +319,7 @@ func (r *DetectionResults) HasDetectionMessages() bool {
 
 // Successful answers if no detector was able to find any possible result to fail the run
 func (r *DetectionResults) Successful() bool {
-	return !r.HasFailures()
+	return !r.HasFailures() && (r.ScanStatus == nil || r.ScanStatus.Completed)
 }
 
 // GetFailures returns the various reasons that a given FilePath was marked as failing by all the detectors in the current run

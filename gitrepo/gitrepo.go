@@ -24,6 +24,52 @@ type Addition struct {
 	Name    FileName
 	Commits []string
 	Data    []byte
+	// BlobHash is the git object id of the content in Data.  It is populated
+	// for history scans so a report can be traced back to the blob even when
+	// the file has been renamed.
+	BlobHash string
+}
+
+// BlobProvenance is the recoverable link between a blob, the paths it has
+// appeared at, and the commits that contain it.  A single blob can be reached
+// through more than one path (for example after a rename), so Paths is kept as
+// a set while Commits is the union of all commits that reference the blob.
+type BlobProvenance struct {
+	BlobHash    string           `json:"blob"`
+	Paths       []string         `json:"paths"`
+	PathCommits []PathProvenance `json:"path_commits,omitempty"`
+	Commits     []string         `json:"commits"`
+	Complete    bool             `json:"complete"`
+	Error       string           `json:"error,omitempty"`
+}
+
+// Provenance is kept as a short alias for callers that model the chain
+// directly rather than thinking about a particular blob.
+type Provenance = BlobProvenance
+
+// PathProvenance records the commits in which a particular blob/path pair was
+// observed.  Renames produce several entries for one blob so the original
+// location can still be recovered.
+type PathProvenance struct {
+	Path    string   `json:"path"`
+	Commits []string `json:"commits"`
+}
+
+// ScanStatus records whether every object selected for a scan was actually
+// inspected.  FailedObject identifies the commit or blob that could not be
+// inspected so a failed scan can be diagnosed (and restarted) without having
+// to guess where it stopped.
+type ScanStatus struct {
+	Completed        bool   `json:"completed"`
+	TotalCommits     int    `json:"total_commits"`
+	ScannedCommits   int    `json:"scanned_commits"`
+	FailedObject     string `json:"failed_object,omitempty"`
+	FailedObjectType string `json:"failed_object_type,omitempty"`
+	Error            string `json:"error,omitempty"`
+	// CommitOrder is the order in which commits should be reported.  It is
+	// intentionally not serialized; it exists so a report can be assembled
+	// deterministically from concurrently collected results.
+	CommitOrder []string `json:"-"`
 }
 
 // GitRepo represents a Git repository located at the absolute path represented by root
@@ -161,14 +207,19 @@ func NewAddition(filePath string, content []byte) Addition {
 	}
 }
 
-// NewScannerAddition returns an new Addition for a file with supplied contents and all of the commits the file is in
-func NewScannerAddition(filePath string, commits []string, content []byte) Addition {
-	return Addition{
+// NewScannerAddition returns an new Addition for a file with supplied contents and all of the commits the file is in.
+// An optional blob hash may be supplied to retain the provenance of the content.
+func NewScannerAddition(filePath string, commits []string, content []byte, blobHash ...string) Addition {
+	addition := Addition{
 		Path:    FilePath(filePath),
 		Name:    FileName(path.Base(filePath)),
 		Commits: commits,
 		Data:    content,
 	}
+	if len(blobHash) > 0 {
+		addition.BlobHash = blobHash[0]
+	}
+	return addition
 }
 
 // CheckIfFileExists checks if the file exists on the file system. Does not look into the file contents

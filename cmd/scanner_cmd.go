@@ -41,10 +41,16 @@ func (s *ScannerCmd) Run() int {
 	}
 
 	fmt.Printf("\nPlease check '%s' folder for the talisman scan report\n\n", reportsPath)
+	if s.results.ScanStatus != nil && !s.results.ScanStatus.Completed {
+		logr.Errorf("scan incomplete; failed %s %s: %s", s.results.ScanStatus.FailedObjectType, s.results.ScanStatus.FailedObject, s.results.ScanStatus.Error)
+	}
 	return s.exitStatus()
 }
 
 func (s *ScannerCmd) exitStatus() int {
+	if s.results.ScanStatus != nil && !s.results.ScanStatus.Completed {
+		return EXIT_FAILURE
+	}
 	if s.results.HasFailures() {
 		return EXIT_FAILURE
 	}
@@ -55,14 +61,21 @@ func (s *ScannerCmd) exitStatus() int {
 func NewScannerCmd(ignoreHistory bool, tRC *talismanrc.TalismanRC, reportDirectory string) *ScannerCmd {
 	repoRoot, _ := os.Getwd()
 	reader := gitrepo.NewBatchGitObjectHashReader(repoRoot)
-	additions := scanner.GetAdditions(ignoreHistory, reader)
+	additions, scanStatus, provenance := scanner.GetAdditionsWithStatus(ignoreHistory, reader)
 	ignoreEvaluator := helpers.ScanHistoryEvaluator()
 	if ignoreHistory {
 		ignoreEvaluator = helpers.BuildIgnoreEvaluator("default", tRC, gitrepo.RepoLocatedAt(repoRoot))
 	}
+	results := helpers.NewDetectionResults()
+	results.ScanStatus = &scanStatus
+	results.Provenance = provenance
+	results.CommitOrder = make(map[string]int, len(scanStatus.CommitOrder))
+	for index, commit := range scanStatus.CommitOrder {
+		results.CommitOrder[commit] = index
+	}
 	return &ScannerCmd{
 		additions:       additions,
-		results:         helpers.NewDetectionResults(),
+		results:         results,
 		reportDirectory: reportDirectory,
 		ignoreEvaluator: ignoreEvaluator,
 		tRC:             tRC,

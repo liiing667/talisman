@@ -69,6 +69,7 @@ func generateAndWriteToFile(r *helpers.DetectionResults, jsonFilePath string) (p
 		return "", fmt.Errorf("error creating file %s: %v", jsonFilePath, err)
 	}
 
+	r.Sort()
 	jsonString, err := json.Marshal(r)
 	if err != nil {
 		return "", fmt.Errorf("error while rendering report json: %v : %#v", err, err)

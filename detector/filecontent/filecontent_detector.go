@@ -74,6 +74,7 @@ type content struct {
 	contentType contentType
 	results     []string
 	severity    severity.Severity
+	commits     []string
 }
 
 func (fc *FileContentDetector) Test(comparator helpers.IgnoreEvaluator, currentAdditions []gitrepo.Addition, talismanRC *talismanrc.TalismanRC, result *helpers.DetectionResults, additionCompletionCallback func()) {
@@ -127,6 +128,7 @@ func (fc *FileContentDetector) Test(comparator helpers.IgnoreEvaluator, currentA
 					contentType: ct.contentType,
 					results:     fc.detectFile(addition.Data, ct.fn),
 					severity:    ct.severity,
+					commits:     append([]string(nil), addition.Commits...),
 				}
 			}
 		}(addition)
@@ -170,9 +172,9 @@ func processContent(c content, threshold severity.Severity, result *helpers.Dete
 				"filePath": c.path,
 			}).Info(c.contentType.getInfo())
 			if string(c.name) == talismanrc.RCFileName || !c.severity.ExceedsThreshold(threshold) {
-				result.Warn(c.path, "filecontent", fmt.Sprintf(c.contentType.getMessageFormat(), formatForReporting(res)), []string{}, c.severity)
+				result.Warn(c.path, "filecontent", fmt.Sprintf(c.contentType.getMessageFormat(), formatForReporting(res)), c.commits, c.severity)
 			} else {
-				result.Fail(c.path, "filecontent", fmt.Sprintf(c.contentType.getMessageFormat(), formatForReporting(res)), []string{}, c.severity)
+				result.Fail(c.path, "filecontent", fmt.Sprintf(c.contentType.getMessageFormat(), formatForReporting(res)), c.commits, c.severity)
 			}
 		}
 	}
