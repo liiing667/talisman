@@ -6,7 +6,7 @@ import (
 	"os/exec"
 	"path"
 	"path/filepath"
-	"regexp"
+	"strconv"
 	"strings"
 
 	log "github.com/sirupsen/logrus"
@@ -44,59 +44,107 @@ func (repo GitRepo) Root() string {
 
 // GetDiffForStagedFiles gets all the staged files and collects the diff section in each file
 func (repo GitRepo) GetDiffForStagedFiles() []Addition {
-	stagedContent := repo.executeRepoCommand("git", "diff", "--staged", "--src-prefix=a/", "--dst-prefix=b/")
-	content := strings.TrimSpace(string(stagedContent))
-	lines := strings.Split(content, "\n")
+	stagedContent := repo.executeRepoCommand(
+		"git",
+		"-c", "core.quotePath=false",
+		"diff",
+		"--staged",
+		"--src-prefix=a/",
+		"--dst-prefix=b/",
+		"--find-renames",
+	)
+	content := strings.TrimRight(string(stagedContent), "\n")
 	result := make([]Addition, 0)
 
-	if len(lines) < 1 {
+	if len(content) == 0 {
 		return result
 	}
 
 	// Standard git diff header pattern
 	// ref: https://git-scm.com/docs/diff-format#_generating_patches_with_p
-
-	lineNumberOfFirstHeader := 0
-	var additionFilename string
-	for ; lineNumberOfFirstHeader < len(lines); lineNumberOfFirstHeader++ {
-		match, stagedFilename := MatchGitDiffLine(lines[lineNumberOfFirstHeader])
-		if match {
-			additionFilename = stagedFilename
-			break
-		}
-	}
-
+	lines := strings.Split(content, "\n")
+	var headerFilename string
+	var renamedFilename string
+	var plusFilename string
+	deleted := false
+	inSection := false
 	additionContentBuffer := &strings.Builder{}
-	for i := lineNumberOfFirstHeader + 1; i < len(lines); i++ {
-		match, stagedFilename := MatchGitDiffLine(lines[i])
-		if match {
-			// It is a new diff header
-			// which means we have reached the next file's header
 
-			// capture content written to buffer so far as addition content
+	flushAddition := func() {
+		if !inSection {
+			return
+		}
+
+		if deleted {
+			headerFilename = ""
+			renamedFilename = ""
+			plusFilename = ""
+			deleted = false
+			inSection = false
+			additionContentBuffer.Reset()
+			return
+		}
+
+		// Prefer the destination named by the patch itself. This keeps a
+		// renamed file tied to the path it has in the staged snapshot, even
+		// when the a/ and b/ header paths differ.
+		additionFilename := plusFilename
+		if additionFilename == "" {
+			additionFilename = renamedFilename
+		}
+		if additionFilename == "" {
+			additionFilename = headerFilename
+		}
+
+		if additionFilename != "" {
 			stagedChanges := repo.extractAdditions(additionContentBuffer.String())
 			if stagedChanges != nil {
-				addition := NewAddition(additionFilename, stagedChanges)
-				result = append(
-					result, addition,
-				)
+				result = append(result, NewAddition(additionFilename, stagedChanges))
 			}
-
-			// get next file name and reset buffer for next iteration
-			additionFilename = stagedFilename
-			additionContentBuffer.Reset()
-		} else {
-			additionContentBuffer.WriteString(lines[i])
-			additionContentBuffer.WriteRune('\n')
 		}
+
+		headerFilename = ""
+		renamedFilename = ""
+		plusFilename = ""
+		deleted = false
+		inSection = false
+		additionContentBuffer.Reset()
 	}
 
-	// Save last file's diff content
-	stagedChanges := repo.extractAdditions(additionContentBuffer.String())
-	if stagedChanges != nil {
-		addition := NewAddition(additionFilename, stagedChanges)
-		result = append(result, addition)
+	for _, line := range lines {
+		line = strings.TrimSuffix(line, "\r")
+		if strings.HasPrefix(line, "diff --git ") {
+			flushAddition()
+			inSection = true
+			_, headerFilename = MatchGitDiffLine(line)
+			continue
+		}
+
+		if !inSection {
+			continue
+		}
+
+		switch {
+		case strings.HasPrefix(line, "deleted file mode "):
+			deleted = true
+		case strings.HasPrefix(line, "rename to "):
+			renamedFilename = parseGitDiffPath(strings.TrimPrefix(line, "rename to "), "")
+		case strings.HasPrefix(line, "copy to "):
+			renamedFilename = parseGitDiffPath(strings.TrimPrefix(line, "copy to "), "")
+		case strings.HasPrefix(line, "+++ "):
+			path := parseGitDiffPath(strings.TrimPrefix(line, "+++ "), "b/")
+			if path != "" && path != "/dev/null" {
+				plusFilename = path
+			} else if path == "/dev/null" {
+				deleted = true
+			}
+		}
+
+		additionContentBuffer.WriteString(line)
+		additionContentBuffer.WriteRune('\n')
 	}
+
+	flushAddition()
 
 	log.WithFields(log.Fields{
 		"additions": result,
@@ -106,19 +154,137 @@ func (repo GitRepo) GetDiffForStagedFiles() []Addition {
 }
 
 func MatchGitDiffLine(gitDiffString string) (bool, string) {
-	if strings.Contains(gitDiffString, "diff --git") {
-		fileNameLength := (len(gitDiffString) - len("diff --git a/ b/")) / 2
-		regexPattern := fmt.Sprintf("^diff --git a/(.{%v}) b/(.{%v})$", fileNameLength, fileNameLength)
-		headerRegex := regexp.MustCompile(regexPattern)
+	const headerPrefix = "diff --git "
+	gitDiffString = strings.TrimSuffix(gitDiffString, "\r")
+	if !strings.HasPrefix(gitDiffString, headerPrefix) {
+		return false, ""
+	}
 
-		if headerRegex.MatchString(gitDiffString) {
-			matches := headerRegex.FindStringSubmatch(gitDiffString)
-			if matches[1] == matches[2] {
-				return true, matches[1]
+	_, destination, ok := splitGitDiffHeader(strings.TrimPrefix(gitDiffString, headerPrefix))
+	if !ok {
+		return false, ""
+	}
+	return true, destination
+}
+
+// splitGitDiffHeader splits the "a/<path> b/<path>" portion of a diff header.
+// Git does not quote paths containing spaces, so prefer a split that describes
+// the same path on both sides (the common modification/deletion case).
+func splitGitDiffHeader(header string) (string, string, bool) {
+	if strings.HasPrefix(header, `"`) {
+		source, remainder, ok := consumeQuotedGitPath(header)
+		if !ok {
+			return "", "", false
+		}
+		remainder = strings.TrimPrefix(remainder, " ")
+		destination := remainder
+		if strings.HasPrefix(remainder, `"`) {
+			var destinationOK bool
+			destination, _, destinationOK = consumeQuotedGitPath(remainder)
+			if !destinationOK {
+				return "", "", false
 			}
 		}
+		return strings.TrimPrefix(source, "a/"), strings.TrimPrefix(destination, "b/"), true
 	}
-	return false, ""
+
+	// Only the destination is quoted. Since an unquoted source cannot contain
+	// a double quote, the space before the quoted token is the separator.
+	if index := strings.Index(header, ` "`); index >= 0 {
+		source := header[:index]
+		destination, _, ok := consumeQuotedGitPath(header[index+1:])
+		if ok && strings.HasPrefix(source, "a/") && strings.HasPrefix(destination, "b/") {
+			return strings.TrimPrefix(source, "a/"), strings.TrimPrefix(destination, "b/"), true
+		}
+	}
+
+	var separators []int
+	for offset := 0; offset < len(header); {
+		index := strings.Index(header[offset:], " b/")
+		if index < 0 {
+			break
+		}
+		separator := offset + index
+		separators = append(separators, separator)
+		offset = separator + 1
+	}
+
+	for _, separator := range separators {
+		source := header[:separator]
+		destination := header[separator+1:]
+		if !strings.HasPrefix(source, "a/") || !strings.HasPrefix(destination, "b/") {
+			continue
+		}
+		if strings.TrimPrefix(source, "a/") == strings.TrimPrefix(destination, "b/") {
+			return strings.TrimPrefix(source, "a/"), strings.TrimPrefix(destination, "b/"), true
+		}
+	}
+
+	// A rename/copy has different paths on each side. Pick the most
+	// plausible split; this also copes with spaces in both paths, where a
+	// " b/" sequence can legitimately occur inside either name.
+	bestSeparator := -1
+	bestScore := -1
+	for _, separator := range separators {
+		source := header[:separator]
+		destination := header[separator+1:]
+		if !strings.HasPrefix(source, "a/") || !strings.HasPrefix(destination, "b/") {
+			continue
+		}
+		source = strings.TrimPrefix(source, "a/")
+		destination = strings.TrimPrefix(destination, "b/")
+		score := 0
+		if strings.Count(source, "/") == strings.Count(destination, "/") {
+			score++
+		}
+		if path.Ext(source) == path.Ext(destination) {
+			score++
+		}
+		if score >= bestScore {
+			bestScore = score
+			bestSeparator = separator
+		}
+	}
+	if bestSeparator >= 0 {
+		source := strings.TrimPrefix(header[:bestSeparator], "a/")
+		destination := strings.TrimPrefix(header[bestSeparator+1:], "b/")
+		return source, destination, true
+	}
+
+	return "", "", false
+}
+
+func consumeQuotedGitPath(value string) (string, string, bool) {
+	if len(value) == 0 || value[0] != '"' {
+		return "", "", false
+	}
+	for i := 1; i < len(value); i++ {
+		switch value[i] {
+		case '\\':
+			i++
+		case '"':
+			unquoted, err := strconv.Unquote(value[:i+1])
+			if err != nil {
+				return "", "", false
+			}
+			return unquoted, value[i+1:], true
+		}
+	}
+	return "", "", false
+}
+
+func parseGitDiffPath(value, prefix string) string {
+	value = strings.TrimSuffix(value, "\r")
+	if strings.HasPrefix(value, `"`) {
+		if unquoted, _, ok := consumeQuotedGitPath(value); ok {
+			value = unquoted
+		}
+	} else if index := strings.IndexByte(value, '\t'); index >= 0 {
+		// Git appends a tab before the (empty) timestamp when the path
+		// contains spaces.
+		value = value[:index]
+	}
+	return strings.TrimPrefix(value, prefix)
 }
 
 // StagedAdditions returns the files staged for commit in a GitRepo
@@ -230,27 +396,105 @@ func (repo GitRepo) TrackedFilesAsAdditions() []Addition {
 	return additions
 }
 
+// IndexFilesAsAdditions returns every path in the staged snapshot (the index)
+// as an Addition. Unlike TrackedFilesAsAdditions, this reflects renames and
+// other staged changes instead of the paths from the last commit.
+func (repo GitRepo) IndexFilesAsAdditions() []Addition {
+	byteArray := repo.executeRepoCommand("git", "ls-files", "-z")
+	var additions []Addition
+	for _, path := range strings.Split(string(byteArray), "\x00") {
+		if path != "" {
+			additions = append(additions, NewAddition(path, make([]byte, 0)))
+		}
+	}
+	return additions
+}
+
+// StagedSnapshotFilesAsAdditions returns the path set of the current staged
+// snapshot while retaining the historical ordering of tracked files followed
+// by newly staged files. Paths that disappeared from the index (for example
+// because they were renamed or deleted) are not carried over from HEAD.
+func (repo GitRepo) StagedSnapshotFilesAsAdditions() []Addition {
+	indexAdditions := repo.IndexFilesAsAdditions()
+	indexPaths := make(map[string]bool)
+	for _, addition := range indexAdditions {
+		indexPaths[string(addition.Path)] = true
+	}
+
+	seen := make(map[string]bool)
+	var result []Addition
+	for _, addition := range repo.TrackedFilesAsAdditions() {
+		path := string(addition.Path)
+		if indexPaths[path] && !seen[path] {
+			result = append(result, addition)
+			seen[path] = true
+		}
+	}
+	for _, addition := range repo.StagedAdditions() {
+		path := string(addition.Path)
+		if !seen[path] {
+			result = append(result, addition)
+			seen[path] = true
+		}
+	}
+	// Guard against a source list that is unavailable (for example a
+	// detached HEAD without a branch): every index path must still belong to
+	// the checksum snapshot.
+	for _, addition := range indexAdditions {
+		path := string(addition.Path)
+		if !seen[path] {
+			result = append(result, addition)
+			seen[path] = true
+		}
+	}
+	return result
+}
+
 func (repo GitRepo) trackedFilePaths() []string {
 	branchName := repo.currentBranch()
 	if len(branchName) == 0 {
 		return make([]string, 0)
 	}
-	byteArray := repo.executeRepoCommand("git", "ls-tree", branchName, "--name-only", "-r")
-	trackedFilePaths := strings.Split(string(byteArray), "\n")
+	byteArray := repo.executeRepoCommand("git", "ls-tree", "-z", "--name-only", "-r", branchName)
+	var trackedFilePaths []string
+	for _, path := range strings.Split(string(byteArray), "\x00") {
+		if path != "" {
+			trackedFilePaths = append(trackedFilePaths, path)
+		}
+	}
 	return trackedFilePaths
 }
 
 func (repo GitRepo) stagedFiles() []string {
-	stagedFiles := strings.Split(repo.fetchStagedChanges(), "\n")
+	output := repo.fetchStagedChanges()
+	if len(output) == 0 {
+		return []string{}
+	}
+
+	stagedFiles := strings.Split(output, "\x00")
 	var result []string
-	for _, c := range stagedFiles {
-		if len(c) != 0 {
-			changeTypeAndFile := strings.Split(c, "\t")
-			if len(changeTypeAndFile) > 0 {
-				file := changeTypeAndFile[1]
-				result = append(result, file)
-			}
+	for index := 0; index < len(stagedFiles); {
+		changeType := stagedFiles[index]
+		index++
+		if changeType == "" {
+			continue
 		}
+		if index >= len(stagedFiles) {
+			break
+		}
+
+		file := stagedFiles[index]
+		index++
+		if strings.HasPrefix(changeType, "R") || strings.HasPrefix(changeType, "C") {
+			// For renames and copies the destination is the path that
+			// exists in the staged snapshot.
+			if index >= len(stagedFiles) {
+				break
+			}
+			file = stagedFiles[index]
+			index++
+		}
+		result = append(result, file)
 	}
 	return result
 }
@@ -270,7 +514,7 @@ func (repo GitRepo) hasBranch() bool {
 }
 
 func (repo GitRepo) outgoingNonDeletedFiles(oldCommit, newCommit string) []string {
-	allChanges := strings.Split(repo.fetchRawOutgoingDiff(oldCommit, newCommit), "\n")
+	allChanges := strings.Split(repo.fetchRawOutgoingDiff(oldCommit, newCommit), "\x00")
 	var result []string
 	for _, c := range allChanges {
 		if len(c) != 0 {
@@ -281,7 +525,16 @@ func (repo GitRepo) outgoingNonDeletedFiles(oldCommit, newCommit string) []strin
 }
 
 func (repo *GitRepo) fetchStagedChanges() string {
-	return string(repo.executeRepoCommand("git", "diff", "--cached", "--name-status", "--diff-filter=ACM"))
+	return string(repo.executeRepoCommand(
+		"git",
+		"-c", "core.quotePath=false",
+		"diff",
+		"--cached",
+		"--name-status",
+		"-z",
+		"--diff-filter=ACMR",
+		"--find-renames",
+	))
 }
 
 // extractAdditions will accept git diff --staged {file} output and filters the command output
@@ -301,7 +554,16 @@ func (repo *GitRepo) extractAdditions(diffContent string) []byte {
 
 func (repo GitRepo) fetchRawOutgoingDiff(oldCommit string, newCommit string) string {
 	gitRange := oldCommit + ".." + newCommit
-	return string(repo.executeRepoCommand("git", "diff", gitRange, "--name-only", "--diff-filter=ACM"))
+	return string(repo.executeRepoCommand(
+		"git",
+		"-c", "core.quotePath=false",
+		"diff",
+		gitRange,
+		"--name-only",
+		"-z",
+		"--diff-filter=ACMR",
+		"--find-renames",
+	))
 }
 
 func (repo GitRepo) executeRepoCommand(commandName string, args ...string) []byte {

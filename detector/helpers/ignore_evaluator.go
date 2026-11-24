@@ -32,8 +32,21 @@ type ignoreEvaluator struct {
 // Returns an IgnoreEvaluator around the rules defined in the current .talismanrc file
 func BuildIgnoreEvaluator(hasherMode string, talismanRC *talismanrc.TalismanRC, repo gitrepo.GitRepo) IgnoreEvaluator {
 	wd, _ := os.Getwd()
-	hasher := utility.MakeHasher(hasherMode, wd)
-	allTrackedFiles := append(repo.TrackedFilesAsAdditions(), repo.StagedAdditions()...)
+	root := repo.Root()
+	if root == "" {
+		root = wd
+	}
+	hasher := utility.MakeHasher(hasherMode, root)
+
+	var allTrackedFiles []gitrepo.Addition
+	if hasherMode == "pre-commit" {
+		// The pre-commit hasher reads blobs from the index. Use the same
+		// index snapshot for the path list so a rename cannot leave the old
+		// path behind in the checksum calculation.
+		allTrackedFiles = repo.StagedSnapshotFilesAsAdditions()
+	} else {
+		allTrackedFiles = append(repo.TrackedFilesAsAdditions(), repo.StagedAdditions()...)
+	}
 	calculator := checksumcalculator.NewChecksumCalculator(hasher, allTrackedFiles)
 	return &ignoreEvaluator{calculator: calculator, talismanRC: talismanRC}
 }
@@ -46,9 +59,13 @@ func (ie *ignoreEvaluator) ShouldIgnore(addition gitrepo.Addition, detectorType 
 // isScanNotRequired returns true if an Addition's checksum matches one ignored by the .talismanrc file
 func (ie *ignoreEvaluator) isScanNotRequired(addition gitrepo.Addition) bool {
 	for _, ignore := range ie.talismanRC.FileIgnoreConfig {
-		if addition.Matches(ignore.GetFileName()) {
-			currentCollectiveChecksum := ie.calculator.CalculateCollectiveChecksumForPattern(ignore.GetFileName())
-			return ignore.ChecksumMatches(currentCollectiveChecksum)
+		pattern := ignore.GetFileName()
+		if pattern == "" || ignore.Checksum == "" || !addition.Matches(pattern) {
+			continue
+		}
+		currentCollectiveChecksum := ie.calculator.CalculateCollectiveChecksumForPattern(pattern)
+		if ignore.ChecksumMatches(currentCollectiveChecksum) {
+			return true
 		}
 	}
 	return false

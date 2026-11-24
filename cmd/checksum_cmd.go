@@ -29,8 +29,7 @@ func (s *ChecksumCmd) Run() int {
 		return EXIT_FAILURE
 	}
 
-	gitTrackedFilesAsAdditions := repo.TrackedFilesAsAdditions()
-	gitTrackedFilesAsAdditions = append(gitTrackedFilesAsAdditions, repo.StagedAdditions()...)
+	gitTrackedFilesAsAdditions := repo.StagedSnapshotFilesAsAdditions()
 
 	cc := checksumcalculator.NewChecksumCalculator(s.hasher, gitTrackedFilesAsAdditions)
 	rcSuggestion := cc.SuggestTalismanRC(s.fileNamePatterns)

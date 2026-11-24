@@ -67,29 +67,30 @@ var hashers = make(map[string]SHA256Hasher)
 
 // MakeHasher returns a SHA256 file/object hasher based on mode and a repo root
 func MakeHasher(mode string, root string) SHA256Hasher {
-	if hashers[mode] != nil {
-		return hashers[mode]
+	key := mode + "\x00" + root
+	if hashers[key] != nil {
+		return hashers[key]
 	}
 	switch mode {
 	case "pre-push":
-		hashers[mode] = &gitBatchSHA256Hasher{gitrepo.NewBatchGitHeadPathReader(root)}
+		hashers[key] = &gitBatchSHA256Hasher{gitrepo.NewBatchGitHeadPathReader(root)}
 	case "pre-commit":
-		hashers[mode] = &gitBatchSHA256Hasher{gitrepo.NewBatchGitStagedPathReader(root)}
+		hashers[key] = &gitBatchSHA256Hasher{gitrepo.NewBatchGitStagedPathReader(root)}
 	case "scan":
-		hashers[mode] = &gitBatchSHA256Hasher{gitrepo.NewBatchGitObjectHashReader(root)}
+		hashers[key] = &gitBatchSHA256Hasher{gitrepo.NewBatchGitObjectHashReader(root)}
 	case "pattern":
-		hashers[mode] = &DefaultSHA256Hasher{}
+		hashers[key] = &DefaultSHA256Hasher{}
 	case "checksum":
-		hashers[mode] = &gitBatchSHA256Hasher{gitrepo.NewBatchGitStagedPathReader(root)}
+		hashers[key] = &gitBatchSHA256Hasher{gitrepo.NewBatchGitStagedPathReader(root)}
 	case "default":
-		hashers[mode] = &DefaultSHA256Hasher{}
+		hashers[key] = &DefaultSHA256Hasher{}
 	}
-	err := hashers[mode].Start()
+	err := hashers[key].Start()
 	if err != nil {
 		logrus.Errorf("unable to start hasher: %v", err)
 		return nil
 	}
-	return hashers[mode]
+	return hashers[key]
 }
 
 func DestroyHashers() {
