@@ -275,7 +275,20 @@ func (r *DetectionResults) suggestTalismanRC(filePaths []string, promptContext p
 
 		for _, confirmedEntry := range confirmedEntries {
 			resultsDetails := r.getResultDetailsForFilePath(gitrepo.FilePath(confirmedEntry.GetFileName()))
+			if resultsDetails == nil {
+				continue
+			}
+			// The entry that was actually stored may retain detector restrictions
+			// from an existing rule for the same file. Only failures covered by
+			// that rule have really been accepted by the user's confirmation.
+			effectiveEntry, found := talismanrcConfig.FileIgnoreConfigFor(confirmedEntry.GetFileName())
+			if !found {
+				continue
+			}
 			for _, failure := range resultsDetails.FailureList {
+				if !effectiveEntry.CoversDetector(failure.Category) {
+					continue
+				}
 				r.updateResultsSummary(failure.Category, true)
 			}
 		}

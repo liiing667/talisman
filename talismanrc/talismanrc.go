@@ -65,12 +65,28 @@ func (tRC *TalismanRC) AddIgnores(entriesToAdd []FileIgnoreConfig) {
 	}
 }
 
+// FileIgnoreConfigFor returns the ignore rule configured for the supplied file path.
+func (tRC *TalismanRC) FileIgnoreConfigFor(filePath string) (FileIgnoreConfig, bool) {
+	for _, ignore := range tRC.FileIgnoreConfig {
+		if ignore.GetFileName() == filePath {
+			return ignore, true
+		}
+	}
+	return FileIgnoreConfig{}, false
+}
+
 func combineFileIgnores(exsiting, incoming []FileIgnoreConfig) []FileIgnoreConfig {
 	existingMap := make(map[string]FileIgnoreConfig)
 	for _, fIC := range exsiting {
 		existingMap[fIC.FileName] = fIC
 	}
 	for _, fIC := range incoming {
+		// Interactive suggestions only carry a checksum. Keep any detector
+		// restrictions already configured for the file so that confirming such a
+		// suggestion cannot silently broaden an ignore to every detector.
+		if existing, ok := existingMap[fIC.FileName]; ok && len(fIC.IgnoreDetectors) == 0 {
+			fIC.IgnoreDetectors = existing.IgnoreDetectors
+		}
 		existingMap[fIC.FileName] = fIC
 	}
 	result := make([]FileIgnoreConfig, len(existingMap))

@@ -51,6 +51,12 @@ func (i *FileIgnoreConfig) GetFileName() string {
 	return i.FileName
 }
 
+// CoversDetector reports whether this rule applies to the supplied detector.
+// A rule without an explicit ignore_detectors list covers every detector.
+func (i *FileIgnoreConfig) CoversDetector(detectorName string) bool {
+	return len(i.IgnoreDetectors) == 0 || contains(i.IgnoreDetectors, detectorName)
+}
+
 func (i *FileIgnoreConfig) ChecksumMatches(incomingChecksum string) bool {
 	return i.Checksum == incomingChecksum
 }
