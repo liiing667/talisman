@@ -16,6 +16,7 @@ type PatternMatcher struct {
 type DetectionsWithSeverity struct {
 	detections []string
 	severity   severity.Severity
+	ruleName   string
 }
 
 func (pm *PatternMatcher) check(content string, thresholdValue severity.Severity) []DetectionsWithSeverity {
@@ -27,7 +28,11 @@ func (pm *PatternMatcher) check(content string, thresholdValue severity.Severity
 		matches := regex.FindAllString(content, -1)
 		if matches != nil {
 			detected = append(detected, matches...)
-			detectionsWithSeverity = append(detectionsWithSeverity, DetectionsWithSeverity{detections: detected, severity: pattern.Severity})
+			ruleName := pattern.RuleName
+			if ruleName == "" {
+				ruleName = "pattern"
+			}
+			detectionsWithSeverity = append(detectionsWithSeverity, DetectionsWithSeverity{detections: detected, severity: pattern.Severity, ruleName: ruleName})
 		}
 	}
 	return detectionsWithSeverity
@@ -40,7 +45,7 @@ func (pm *PatternMatcher) add(ps talismanrc.PatternString) {
 		return
 	}
 	logrus.Infof("added custom pattern '%s' with high severity", ps)
-	pm.regexes = append(pm.regexes, &severity.PatternSeverity{Pattern: re, Severity: severity.SeverityConfiguration["CustomPattern"]})
+	pm.regexes = append(pm.regexes, &severity.PatternSeverity{Pattern: re, Severity: severity.SeverityConfiguration["CustomPattern"], RuleName: customPatternRuleName})
 }
 
 func NewPatternMatcher(patterns []*severity.PatternSeverity) *PatternMatcher {

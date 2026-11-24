@@ -7,4 +7,5 @@ import (
 type PatternSeverity struct {
 	Pattern  *regexp.Regexp
 	Severity Severity
+	RuleName string
 }

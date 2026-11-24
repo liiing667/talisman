@@ -18,14 +18,14 @@ type PatternDetector struct {
 
 var (
 	detectorPatterns = []*severity.PatternSeverity{
-		{Pattern: regexp.MustCompile(`(?i)((.*)(password|passphrase|secret|key|pwd|pword|pass)(.*) *[:=>,][^,;\n]{8,})`), Severity: severity.SeverityConfiguration["PasswordPhrasePattern"]},
-		{Pattern: regexp.MustCompile(`(?i)((:)(password|passphrase|secret|key|pwd|pword|pass)(.*) *[ ][^,;\n]{8,})`), Severity: severity.SeverityConfiguration["PasswordPhrasePattern"]},
-		{Pattern: regexp.MustCompile(`(?i)(['"_]?pw['"]? *[:=][^,;\n]{8,})`), Severity: severity.SeverityConfiguration["PasswordPhrasePattern"]},
-		{Pattern: regexp.MustCompile(`(?i)(<ConsumerKey>\S*</ConsumerKey>)`), Severity: severity.SeverityConfiguration["ConsumerKeyPattern"]},
-		{Pattern: regexp.MustCompile(`(?i)(<ConsumerSecret>\S*</ConsumerSecret>)`), Severity: severity.SeverityConfiguration["ConsumerSecretParrern"]},
-		{Pattern: regexp.MustCompile(`(?i)(AWS[ \w]+key[ \w]+[:=])`), Severity: severity.SeverityConfiguration["AWSKeyPattern"]},
-		{Pattern: regexp.MustCompile(`(?i)(AWS[ \w]+secret[ \w]+[:=])`), Severity: severity.SeverityConfiguration["AWSSecretPattern"]},
-		{Pattern: regexp.MustCompile(`(?s)(BEGIN RSA PRIVATE KEY.*END RSA PRIVATE KEY)`), Severity: severity.SeverityConfiguration["RSAKeyPattern"]},
+		{Pattern: regexp.MustCompile(`(?i)((.*)(password|passphrase|secret|key|pwd|pword|pass)(.*) *[:=>,][^,;\n]{8,})`), Severity: severity.SeverityConfiguration["PasswordPhrasePattern"], RuleName: "password_phrase_pattern"},
+		{Pattern: regexp.MustCompile(`(?i)((:)(password|passphrase|secret|key|pwd|pword|pass)(.*) *[ ][^,;\n]{8,})`), Severity: severity.SeverityConfiguration["PasswordPhrasePattern"], RuleName: "password_phrase_pattern"},
+		{Pattern: regexp.MustCompile(`(?i)(['"_]?pw['"]? *[:=][^,;\n]{8,})`), Severity: severity.SeverityConfiguration["PasswordPhrasePattern"], RuleName: "password_phrase_pattern"},
+		{Pattern: regexp.MustCompile(`(?i)(<ConsumerKey>\S*</ConsumerKey>)`), Severity: severity.SeverityConfiguration["ConsumerKeyPattern"], RuleName: "consumer_key_pattern"},
+		{Pattern: regexp.MustCompile(`(?i)(<ConsumerSecret>\S*</ConsumerSecret>)`), Severity: severity.SeverityConfiguration["ConsumerSecretParrern"], RuleName: "consumer_secret_pattern"},
+		{Pattern: regexp.MustCompile(`(?i)(AWS[ \w]+key[ \w]+[:=])`), Severity: severity.SeverityConfiguration["AWSKeyPattern"], RuleName: "aws_key_pattern"},
+		{Pattern: regexp.MustCompile(`(?i)(AWS[ \w]+secret[ \w]+[:=])`), Severity: severity.SeverityConfiguration["AWSSecretPattern"], RuleName: "aws_secret_pattern"},
+		{Pattern: regexp.MustCompile(`(?s)(BEGIN RSA PRIVATE KEY.*END RSA PRIVATE KEY)`), Severity: severity.SeverityConfiguration["RSAKeyPattern"], RuleName: "rsa_key_pattern"},
 	}
 )
 
@@ -35,6 +35,8 @@ type match struct {
 	commits    []string
 	detections []DetectionsWithSeverity
 }
+
+const customPatternRuleName = "custom_pattern"
 
 // Test tests the contents of the Additions to ensure that they don't look suspicious
 func (detector PatternDetector) Test(comparator helpers.IgnoreEvaluator, currentAdditions []gitrepo.Addition, ignoreConfig *talismanrc.TalismanRC, result *helpers.DetectionResults, additionCompletionCallback func()) {
@@ -91,15 +93,17 @@ func (detector PatternDetector) processMatch(match match, result *helpers.Detect
 				if string(match.name) == talismanrc.RCFileName || !detectionWithSeverity.severity.ExceedsThreshold(threshold) {
 					log.WithFields(log.Fields{
 						"filePath": match.path,
-						"pattern":  detection,
+						"pattern":  helpers.PublicEvidence(detection),
 					}).Warn("Warning file as it matched pattern.")
-					result.Warn(match.path, "filecontent", fmt.Sprintf("Potential secret pattern : %s", detection), match.commits, detectionWithSeverity.severity)
+					evidence := helpers.NewEvidence(detectionWithSeverity.ruleName, detection)
+					result.WarnWithEvidence(match.path, "filecontent", fmt.Sprintf("Potential secret pattern : %s", helpers.PublicEvidence(detection)), match.commits, detectionWithSeverity.severity, &evidence)
 				} else {
 					log.WithFields(log.Fields{
 						"filePath": match.path,
-						"pattern":  detection,
+						"pattern":  helpers.PublicEvidence(detection),
 					}).Info("Failing file as it matched pattern.")
-					result.Fail(match.path, "filecontent", fmt.Sprintf("Potential secret pattern : %s", detection), match.commits, detectionWithSeverity.severity)
+					evidence := helpers.NewEvidence(detectionWithSeverity.ruleName, detection)
+					result.FailWithEvidence(match.path, "filecontent", fmt.Sprintf("Potential secret pattern : %s", helpers.PublicEvidence(detection)), match.commits, detectionWithSeverity.severity, &evidence)
 				}
 			}
 		}

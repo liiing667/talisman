@@ -24,6 +24,7 @@ type Details struct {
 	Message  string            `json:"message"`
 	Commits  []string          `json:"commits"`
 	Severity severity.Severity `json:"severity,omitempty"`
+	Evidence *Evidence         `json:"evidence,omitempty"`
 }
 
 type ResultsDetails struct {
@@ -77,24 +78,29 @@ func NewDetectionResults() *DetectionResults {
 // Detectors are encouraged to provide context sensitive messages so that fixing the errors is made simple for the end user
 // Fail may be called multiple times for each FilePath and the calls accumulate the provided reasons
 func (r *DetectionResults) Fail(filePath gitrepo.FilePath, category string, message string, commits []string, severity severity.Severity) {
+	r.FailWithEvidence(filePath, category, message, commits, severity, nil)
+}
+
+// FailWithEvidence records a failure with public evidence that can be used to correlate the finding without exposing its secret.
+func (r *DetectionResults) FailWithEvidence(filePath gitrepo.FilePath, category string, message string, commits []string, severity severity.Severity, evidence *Evidence) {
 	isFilePresentInResults := false
 	for resultIndex := 0; resultIndex < len(r.Results); resultIndex++ {
 		if r.Results[resultIndex].Filename == filePath {
 			isFilePresentInResults = true
 			isEntryPresentForGivenCategoryAndMessage := false
 			for detailIndex := 0; detailIndex < len(r.Results[resultIndex].FailureList); detailIndex++ {
-				if strings.Compare(r.Results[resultIndex].FailureList[detailIndex].Category, category) == 0 && strings.Compare(r.Results[resultIndex].FailureList[detailIndex].Message, message) == 0 {
+				if strings.Compare(r.Results[resultIndex].FailureList[detailIndex].Category, category) == 0 && strings.Compare(r.Results[resultIndex].FailureList[detailIndex].Message, message) == 0 && evidenceMatches(r.Results[resultIndex].FailureList[detailIndex].Evidence, evidence) {
 					isEntryPresentForGivenCategoryAndMessage = true
 					r.Results[resultIndex].FailureList[detailIndex].Commits = append(r.Results[resultIndex].FailureList[detailIndex].Commits, commits...)
 				}
 			}
 			if !isEntryPresentForGivenCategoryAndMessage {
-				r.Results[resultIndex].FailureList = append(r.Results[resultIndex].FailureList, Details{category, message, commits, severity})
+				r.Results[resultIndex].FailureList = append(r.Results[resultIndex].FailureList, Details{category, message, commits, severity, evidence})
 			}
 		}
 	}
 	if !isFilePresentInResults {
-		failureDetails := Details{category, message, commits, severity}
+		failureDetails := Details{category, message, commits, severity, evidence}
 		resultDetails := ResultsDetails{filePath, make([]Details, 0), make([]Details, 0), make([]Details, 0)}
 		resultDetails.FailureList = append(resultDetails.FailureList, failureDetails)
 		r.Results = append(r.Results, resultDetails)
@@ -103,29 +109,41 @@ func (r *DetectionResults) Fail(filePath gitrepo.FilePath, category string, mess
 }
 
 func (r *DetectionResults) Warn(filePath gitrepo.FilePath, category string, message string, commits []string, severity severity.Severity) {
+	r.WarnWithEvidence(filePath, category, message, commits, severity, nil)
+}
+
+// WarnWithEvidence records a warning with public evidence while preserving it in the warning category.
+func (r *DetectionResults) WarnWithEvidence(filePath gitrepo.FilePath, category string, message string, commits []string, severity severity.Severity, evidence *Evidence) {
 	isFilePresentInResults := false
 	for resultIndex := 0; resultIndex < len(r.Results); resultIndex++ {
 		if r.Results[resultIndex].Filename == filePath {
 			isFilePresentInResults = true
 			isEntryPresentForGivenCategoryAndMessage := false
 			for detailIndex := 0; detailIndex < len(r.Results[resultIndex].WarningList); detailIndex++ {
-				if strings.Compare(r.Results[resultIndex].WarningList[detailIndex].Category, category) == 0 && strings.Compare(r.Results[resultIndex].WarningList[detailIndex].Message, message) == 0 {
+				if strings.Compare(r.Results[resultIndex].WarningList[detailIndex].Category, category) == 0 && strings.Compare(r.Results[resultIndex].WarningList[detailIndex].Message, message) == 0 && evidenceMatches(r.Results[resultIndex].WarningList[detailIndex].Evidence, evidence) {
 					isEntryPresentForGivenCategoryAndMessage = true
 					r.Results[resultIndex].WarningList[detailIndex].Commits = append(r.Results[resultIndex].WarningList[detailIndex].Commits, commits...)
 				}
 			}
 			if !isEntryPresentForGivenCategoryAndMessage {
-				r.Results[resultIndex].WarningList = append(r.Results[resultIndex].WarningList, Details{category, message, commits, severity})
+				r.Results[resultIndex].WarningList = append(r.Results[resultIndex].WarningList, Details{category, message, commits, severity, evidence})
 			}
 		}
 	}
 	if !isFilePresentInResults {
-		warningDetails := Details{category, message, commits, severity}
+		warningDetails := Details{category, message, commits, severity, evidence}
 		resultDetails := ResultsDetails{filePath, make([]Details, 0), make([]Details, 0), make([]Details, 0)}
 		resultDetails.WarningList = append(resultDetails.WarningList, warningDetails)
 		r.Results = append(r.Results, resultDetails)
 	}
 	r.Summary.Types.Warnings++
+}
+
+func evidenceMatches(existing *Evidence, incoming *Evidence) bool {
+	if existing == nil || incoming == nil {
+		return existing == incoming
+	}
+	return existing.Fingerprint == incoming.Fingerprint && existing.Rule == incoming.Rule
 }
 
 // Ignore is used to mark the supplied FilePath as being ignored.
@@ -144,13 +162,13 @@ func (r *DetectionResults) Ignore(filePath gitrepo.FilePath, category string) {
 				}
 			}
 			if !isEntryPresentForGivenCategory {
-				detail := Details{category, "", make([]string, 0), severity.Low}
+				detail := Details{category, "", make([]string, 0), severity.Low, nil}
 				r.Results[resultIndex].IgnoreList = append(r.Results[resultIndex].IgnoreList, detail)
 			}
 		}
 	}
 	if !isFilePresentInResults {
-		ignoreDetails := Details{category, "", make([]string, 0), severity.Low}
+		ignoreDetails := Details{category, "", make([]string, 0), severity.Low, nil}
 		resultDetails := ResultsDetails{filePath, make([]Details, 0), make([]Details, 0), make([]Details, 0)}
 		resultDetails.IgnoreList = append(resultDetails.IgnoreList, ignoreDetails)
 		r.Results = append(r.Results, resultDetails)

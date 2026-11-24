@@ -2,6 +2,8 @@ package main
 
 import (
 	"os"
+	"path/filepath"
+	"strings"
 	"talisman/git_testing"
 	"talisman/talismanrc"
 	"testing"
@@ -36,6 +38,31 @@ func TestScannerCmdDetectsSecretAndFails(t *testing.T) {
 		scannerCmd := NewScannerCmd(false, &talismanrc.TalismanRC{}, git.Root())
 		scannerCmd.Run()
 		assert.Equal(t, 1, scannerCmd.exitStatus(), "Expected ScannerCmd.exitStatus() to return 1 since secret present in history")
+	})
+}
+
+func TestScannerCmdReportDoesNotContainSecretButContainsRedactedEvidence(t *testing.T) {
+	git_testing.DoInTempGitRepo(func(git *git_testing.GitTesting) {
+		git.SetupBaselineFiles("simple-file")
+		git.CreateFileWithContents("some-dir/file-with-secret.txt", awsAccessKeyIDExample)
+		git.AddAndcommit("*", "Initial Commit")
+		os.Chdir(git.Root())
+
+		reportDirectory := filepath.Join(git.Root(), "scan-report")
+		scannerCmd := NewScannerCmd(false, &talismanrc.TalismanRC{}, reportDirectory)
+		exitStatus := scannerCmd.Run()
+
+		assert.Equal(t, EXIT_FAILURE, exitStatus)
+		reportBytes, err := os.ReadFile(filepath.Join(reportDirectory, "talisman_reports", "data", "report.json"))
+		assert.NoError(t, err)
+		reportText := string(reportBytes)
+		assert.NotContains(t, reportText, awsAccessKeyIDExample)
+		assert.NotContains(t, reportText, "wJalrXUtnFEMI")
+		assert.Contains(t, reportText, "some-dir/file-with-secret.txt")
+		assert.Contains(t, reportText, "filecontent")
+		assert.Contains(t, reportText, "rule")
+		assert.Contains(t, reportText, "fingerprint")
+		assert.True(t, strings.Contains(reportText, "*"), "report should contain redacted evidence")
 	})
 }
 

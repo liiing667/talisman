@@ -30,15 +30,15 @@ func TestShouldReturnEmptyStringWhenDoesNotMatchAnyRegex(t *testing.T) {
 func TestShouldReturnStringWhenMatchedPasswordPattern(t *testing.T) {
 	detections1 := NewPatternMatcher([]*severity.PatternSeverity{{Pattern: testRegexpPassword, Severity: severity.Low}}).check("password\" :  123456789", severity.Low)
 	detections2 := NewPatternMatcher([]*severity.PatternSeverity{{Pattern: testRegexpPw, Severity: severity.Medium}}).check("pw\"  :  123456789", severity.Low)
-	assert.Equal(t, []DetectionsWithSeverity{{detections: []string{"password\" :  123456789"}, severity: severity.Low}}, detections1)
-	assert.Equal(t, []DetectionsWithSeverity{{detections: []string{"pw\"  :  123456789"}, severity: severity.Medium}}, detections2)
+	assert.Equal(t, []DetectionsWithSeverity{{detections: []string{"password\" :  123456789"}, severity: severity.Low, ruleName: "pattern"}}, detections1)
+	assert.Equal(t, []DetectionsWithSeverity{{detections: []string{"pw\"  :  123456789"}, severity: severity.Medium, ruleName: "pattern"}}, detections2)
 }
 
 func TestShouldAddGoodPatternWithHighToMatcher(t *testing.T) {
 	pm := NewPatternMatcher([]*severity.PatternSeverity{})
 	pm.add(talismanrc.PatternString(testRegexpPwPattern))
 	detections := pm.check("pw\"  :  123456789", severity.Low)
-	assert.Equal(t, []DetectionsWithSeverity{{detections: []string{"pw\"  :  123456789"}, severity: severity.High}}, detections)
+	assert.Equal(t, []DetectionsWithSeverity{{detections: []string{"pw\"  :  123456789"}, severity: severity.High, ruleName: customPatternRuleName}}, detections)
 }
 
 func TestShouldNotAddBadPatternToMatcher(t *testing.T) {

@@ -43,6 +43,18 @@ const (
 	creditCardContent
 )
 
+func (ct contentType) getRuleName() string {
+	switch ct {
+	case base64Content:
+		return "base64_content"
+	case hexContent:
+		return "hex_content"
+	case creditCardContent:
+		return "credit_card_content"
+	}
+	return "unknown_content"
+}
+
 func (ct contentType) getInfo() string {
 	switch ct {
 	case base64Content:
@@ -166,23 +178,18 @@ func processIgnoredFilepath(path gitrepo.FilePath, result *helpers.DetectionResu
 func processContent(c content, threshold severity.Severity, result *helpers.DetectionResults) {
 	for _, res := range c.results {
 		if res != "" {
+			publicEvidence := helpers.PublicEvidence(res)
+			evidence := helpers.NewEvidence(c.contentType.getRuleName(), res)
 			log.WithFields(log.Fields{
 				"filePath": c.path,
 			}).Info(c.contentType.getInfo())
 			if string(c.name) == talismanrc.RCFileName || !c.severity.ExceedsThreshold(threshold) {
-				result.Warn(c.path, "filecontent", fmt.Sprintf(c.contentType.getMessageFormat(), formatForReporting(res)), []string{}, c.severity)
+				result.WarnWithEvidence(c.path, "filecontent", fmt.Sprintf(c.contentType.getMessageFormat(), publicEvidence), []string{}, c.severity, &evidence)
 			} else {
-				result.Fail(c.path, "filecontent", fmt.Sprintf(c.contentType.getMessageFormat(), formatForReporting(res)), []string{}, c.severity)
+				result.FailWithEvidence(c.path, "filecontent", fmt.Sprintf(c.contentType.getMessageFormat(), publicEvidence), []string{}, c.severity, &evidence)
 			}
 		}
 	}
-}
-
-func formatForReporting(input string) string {
-	if len(input) > 50 {
-		return input[:47] + "..."
-	}
-	return input
 }
 
 func (fc *FileContentDetector) detectFile(data []byte, getResult fn) []string {

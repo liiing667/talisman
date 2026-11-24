@@ -2,6 +2,7 @@ package filecontent
 
 import (
 	"math"
+	"talisman/detector/helpers"
 	"talisman/talismanrc"
 
 	log "github.com/sirupsen/logrus"
@@ -46,7 +47,7 @@ func (bd *Base64Detector) CheckBase64Encoding(word string) string {
 	for _, candidate := range entropyCandidates {
 		entropy := bd.entropy.GetShannonEntropy(candidate, BASE64_CHARS)
 		sliceLimit := int(math.Min(50, float64(len(candidate))))
-		log.Debugf("Detected entropy for word %s = %f", candidate[0:sliceLimit], entropy)
+		log.Debugf("Detected entropy for word %s = %f", helpers.PublicEvidence(candidate[0:sliceLimit]), entropy)
 		if entropy > bd.base64EntropyThreshold && !bd.wordCheck.containsWordsOnly(candidate) {
 			return word
 		}

@@ -114,11 +114,59 @@ func TestShouldOnlyWarnSecretPatternIfBelowThreshold(t *testing.T) {
 	assert.True(t, results.HasWarnings(), "Expected file %s to have warnings", filename)
 }
 
+func TestPatternDetectionExposesRedactedMessageAndEvidenceForFailuresAndWarnings(t *testing.T) {
+	secret := "password=UnsafeString"
+	additions := []gitrepo.Addition{gitrepo.NewAddition("secret.txt", []byte(secret))}
+
+	t.Run("failure", func(t *testing.T) {
+		results := helpers.NewDetectionResults()
+		NewPatternDetector(customPatterns).Test(defaultIgnoreEvaluator, additions, talismanRC, results, dummyCallback)
+
+		failures := results.GetFailures(additions[0].Path)
+		assert.Len(t, failures, 1)
+		assert.Equal(t, "Potential secret pattern : "+helpers.PublicEvidence(secret), failures[0].Message)
+		assert.NotContains(t, failures[0].Message, "UnsafeString")
+		assert.NotNil(t, failures[0].Evidence)
+		assert.Equal(t, "password_phrase_pattern", failures[0].Evidence.Rule)
+		assert.Equal(t, helpers.NewEvidence("password_phrase_pattern", secret).Fingerprint, failures[0].Evidence.Fingerprint)
+	})
+
+	t.Run("warning", func(t *testing.T) {
+		results := helpers.NewDetectionResults()
+		talismanRCWithThreshold := &talismanrc.TalismanRC{Threshold: severity.High}
+		NewPatternDetector(customPatterns).Test(ignoreEvaluatorWithTalismanRC(talismanRCWithThreshold), additions, talismanRCWithThreshold, results, dummyCallback)
+
+		assert.True(t, results.HasWarnings())
+		assert.False(t, results.HasFailures())
+		assert.Len(t, results.Results[0].WarningList, 1)
+		warning := results.Results[0].WarningList[0]
+		assert.Equal(t, "filecontent", warning.Category)
+		assert.NotContains(t, warning.Message, "UnsafeString")
+		assert.NotNil(t, warning.Evidence)
+		assert.Equal(t, "password_phrase_pattern", warning.Evidence.Rule)
+	})
+}
+
+func TestCustomPatternDetectionUsesCustomRuleEvidence(t *testing.T) {
+	results := helpers.NewDetectionResults()
+	customPattern := []talismanrc.PatternString{`token=[^,;\n]+`}
+	content := []byte("token=custom-secret-token")
+	additions := []gitrepo.Addition{gitrepo.NewAddition("custom.txt", content)}
+
+	NewPatternDetector(customPattern).Test(defaultIgnoreEvaluator, additions, talismanRC, results, dummyCallback)
+
+	failures := results.GetFailures(additions[0].Path)
+	assert.Len(t, failures, 1)
+	assert.NotContains(t, failures[0].Message, "custom-secret-token")
+	assert.Equal(t, customPatternRuleName, failures[0].Evidence.Rule)
+	assert.Equal(t, helpers.NewEvidence(customPatternRuleName, string(content)).Fingerprint, failures[0].Evidence.Fingerprint)
+}
+
 func DetectionOfSecretPattern(filename string, content []byte) (*helpers.DetectionResults, []gitrepo.Addition, string) {
 	results := helpers.NewDetectionResults()
 	additions := []gitrepo.Addition{gitrepo.NewAddition(filename, content)}
 	NewPatternDetector(customPatterns).Test(defaultIgnoreEvaluator, additions, talismanRC, results, dummyCallback)
-	expected := "Potential secret pattern : " + string(content)
+	expected := "Potential secret pattern : " + helpers.PublicEvidence(string(content))
 	return results, additions, expected
 }
 
