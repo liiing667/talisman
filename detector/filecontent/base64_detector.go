@@ -51,6 +51,9 @@ func (bd *Base64Detector) CheckBase64Encoding(word string) string {
 			return word
 		}
 	}
+	if len(word) >= minNestedEncodedLength && detectNestedSecret(word, base64Content, bd.base64EntropyThreshold) {
+		return word
+	}
 	if bd.AggressiveDetector != nil {
 		return bd.AggressiveDetector.Test(word)
 	}

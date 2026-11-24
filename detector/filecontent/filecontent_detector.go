@@ -125,7 +125,7 @@ func (fc *FileContentDetector) Test(comparator helpers.IgnoreEvaluator, currentA
 					name:        addition.Name,
 					path:        addition.Path,
 					contentType: ct.contentType,
-					results:     fc.detectFile(addition.Data, ct.fn),
+					results:     fc.detectFileOfType(addition.Data, ct.fn, ct.contentType),
 					severity:    ct.severity,
 				}
 			}
@@ -190,6 +190,11 @@ func (fc *FileContentDetector) detectFile(data []byte, getResult fn) []string {
 	return fc.checkEachLine(content, getResult)
 }
 
+func (fc *FileContentDetector) detectFileOfType(data []byte, getResult fn, ct contentType) []string {
+	content := string(data)
+	return fc.checkEachLineOfType(content, getResult, ct)
+}
+
 func (fc *FileContentDetector) checkEachLine(content string, getResult fn) []string {
 	lines := strings.Split(content, "\n")
 	res := []string{}
@@ -200,6 +205,144 @@ func (fc *FileContentDetector) checkEachLine(content string, getResult fn) []str
 		}
 	}
 	return res
+}
+
+func (fc *FileContentDetector) checkEachLineOfType(content string, getResult fn, ct contentType) []string {
+	lines := strings.Split(content, "\n")
+
+	coveredByWrappedValue := make([]bool, len(lines))
+	wrappedResults := map[int]string{}
+	if ct == base64Content || ct == hexContent {
+		for _, finding := range fc.findWrappedEncodings(lines, getResult, ct) {
+			wrappedResults[finding.start] = finding.result
+			for index := finding.start; index < finding.end; index++ {
+				coveredByWrappedValue[index] = true
+			}
+		}
+	}
+
+	perLineResults := make([][]string, len(lines))
+	for index, line := range lines {
+		if coveredByWrappedValue[index] {
+			continue
+		}
+		perLineResults[index] = fc.checkEachWord(line, getResult)
+	}
+
+	res := []string{}
+	for index := range lines {
+		if result, ok := wrappedResults[index]; ok {
+			res = append(res, result)
+			continue
+		}
+		if coveredByWrappedValue[index] {
+			continue
+		}
+		res = append(res, perLineResults[index]...)
+	}
+	return res
+}
+
+type wrappedFinding struct {
+	start  int
+	end    int
+	result string
+}
+
+// findWrappedEncodings reassembles encoded blobs that are split over several
+// lines. The scanner normally tokenises by line and whitespace, which leaves it
+// looking at individual fragments of a MIME-wrapped base64/hex value. Only
+// lines that consist solely of the relevant encoding alphabet are considered.
+// A successfully decoded block replaces the per-line findings for that block
+// so one wrapped value produces one finding rather than a report per fragment.
+func (fc *FileContentDetector) findWrappedEncodings(lines []string, getResult fn, ct contentType) []wrappedFinding {
+	findings := []wrappedFinding{}
+	for index := 0; index < len(lines); {
+		if !isWrappedEncodingLine(lines[index], ct) {
+			index++
+			continue
+		}
+
+		var joined strings.Builder
+		next := index
+		for next < len(lines) && isWrappedEncodingLine(lines[next], ct) {
+			trimmed := strings.TrimSpace(lines[next])
+			if joined.Len()+len(trimmed) > maxNestedEncodedBytes {
+				break
+			}
+			joined.WriteString(trimmed)
+			next++
+			if strings.Contains(trimmed, "=") {
+				break
+			}
+		}
+
+		if next-index >= 2 {
+			encoded := joined.String()
+			if wrappedValueExceedsBudget(encoded, ct) {
+				// Decoding this block would exceed the nested-decoding
+				// expansion budget. Report the original encoded text rather
+				// than allocating it or silently passing the file.
+				findings = append(findings, wrappedFinding{start: index, end: next, result: encoded})
+			} else if validWrappedEncoding(encoded, ct) {
+				if result := getResult(fc, encoded); result != "" {
+					findings = append(findings, wrappedFinding{start: index, end: next, result: result})
+				}
+			}
+		}
+
+		if next == index {
+			index++
+		} else {
+			index = next
+		}
+	}
+	return findings
+}
+
+func isWrappedEncodingLine(line string, ct contentType) bool {
+	trimmed := strings.TrimSpace(line)
+	minLength := 4
+	if ct == hexContent {
+		minLength = 2
+	}
+	if len(trimmed) < minLength || len(trimmed) > 4096 {
+		return false
+	}
+	switch ct {
+	case base64Content:
+		return isBase64Alphabet(trimmed) && !strings.Contains(strings.TrimRight(trimmed, "="), "=")
+	case hexContent:
+		return isHexAlphabet(trimmed)
+	}
+	return false
+}
+
+func validWrappedEncoding(encoded string, ct contentType) bool {
+	switch ct {
+	case base64Content:
+		decoded, ok := decodeBase64String(encoded)
+		// Only treat adjacent lines as one wrapped value when their
+		// concatenation is textual. Otherwise independent encoded values that
+		// happen to sit on consecutive lines (for example a hex value followed
+		// by a base64 value) are merged and their individual findings are lost.
+		return ok && isNestedText(decoded)
+	case hexContent:
+		_, ok := decodeHexString(encoded)
+		return ok
+	}
+	return false
+}
+
+func wrappedValueExceedsBudget(encoded string, ct contentType) bool {
+	condensed := stripEncodingWhitespace(encoded)
+	switch ct {
+	case base64Content:
+		return len(condensed)*3/4 > maxNestedExpandedBytes
+	case hexContent:
+		return len(condensed)/2 > maxNestedExpandedBytes
+	}
+	return false
 }
 
 func (fc *FileContentDetector) checkEachWord(line string, getResult fn) []string {

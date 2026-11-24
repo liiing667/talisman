@@ -31,5 +31,8 @@ func (hd *HexDetector) CheckHexEncoding(word string) string {
 			return word
 		}
 	}
+	if len(word) >= minNestedEncodedLength && detectNestedSecret(word, hexContent, BASE64_ENTROPY_THRESHOLD) {
+		return word
+	}
 	return ""
 }
