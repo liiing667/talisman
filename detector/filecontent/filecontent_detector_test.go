@@ -27,6 +27,31 @@ func TestShouldNotFlagSafeText(t *testing.T) {
 	assert.False(t, results.HasFailures(), "Expected file to not contain base64 encoded texts.")
 }
 
+func TestShouldSkipContentChecksAndWarnForFilesExceedingMaxScannableSize(t *testing.T) {
+	results := helpers.NewDetectionResults()
+	secretThatWouldBeFlagged := "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY\n"
+	oversizedContent := secretThatWouldBeFlagged + strings.Repeat("a", gitrepo.DefaultMaxBlobSize)
+	additions := []gitrepo.Addition{gitrepo.NewAddition(filename, []byte(oversizedContent))}
+
+	NewFileContentDetector(emptyTalismanRC).
+		Test(defaultIgnoreEvaluator, additions, emptyTalismanRC, results, dummyCallback)
+
+	assert.False(t, results.HasFailures(), "Expected oversized file to be skipped before content detection runs.")
+	assert.True(t, results.HasWarnings(), "Expected oversized file to be surfaced as a warning instead of passing silently.")
+}
+
+func TestShouldStillDetectSecretsInFilesWithinMaxScannableSize(t *testing.T) {
+	results := helpers.NewDetectionResults()
+	const awsSecretAccessKey string = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+	additions := []gitrepo.Addition{gitrepo.NewAddition(filename, []byte(awsSecretAccessKey))}
+
+	NewFileContentDetector(emptyTalismanRC).
+		Test(defaultIgnoreEvaluator, additions, emptyTalismanRC, results, dummyCallback)
+
+	assert.True(t, results.HasFailures(), "Expected medium sized file with a secret to keep failing the scan.")
+	assert.False(t, results.HasWarnings(), "Expected medium sized file to not produce oversized warnings.")
+}
+
 func TestShouldIgnoreFileIfNeeded(t *testing.T) {
 	results := helpers.NewDetectionResults()
 	additions := []gitrepo.Addition{gitrepo.NewAddition(filename, []byte("prettySafe"))}

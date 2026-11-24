@@ -1,6 +1,7 @@
 package scanner
 
 import (
+	"fmt"
 	"log"
 	"os"
 	"os/exec"
@@ -20,10 +21,28 @@ type BlobsInCommits struct {
 	commits map[blobDetails][]string
 }
 
-// GetAdditions will get all the additions for entire git history
-func GetAdditions(ignoreHistory bool, br gitrepo.BatchReader) []gitrepo.Addition {
+// BlobReadError represents a git blob that could not be read while collecting
+// additions from the repository history (for example because the blob exceeds
+// the maximum readable size, or the git object is missing or corrupt).
+type BlobReadError struct {
+	Path    string
+	Commits []string
+	Err     error
+}
+
+// Error returns a human readable description of the blob read failure.
+func (e BlobReadError) Error() string {
+	return fmt.Sprintf("could not read blob for file %q: %v", e.Path, e.Err)
+}
+
+// GetAdditions will get all the additions for entire git history.
+// Blobs that cannot be read are not silently treated as empty files; they are
+// reported as BlobReadErrors so that a scan with partial failures is never
+// mistaken for a successful one.
+func GetAdditions(ignoreHistory bool, br gitrepo.BatchReader) ([]gitrepo.Addition, []BlobReadError) {
 	blobsInCommits := getBlobsInCommit(ignoreHistory)
 	var additions []gitrepo.Addition
+	var readErrors []BlobReadError
 	err := br.Start()
 	if err != nil {
 		logrus.Errorf("error creating file reader %v", err)
@@ -36,12 +55,17 @@ func GetAdditions(ignoreHistory bool, br gitrepo.BatchReader) []gitrepo.Addition
 	}()
 
 	for blob := range blobsInCommits.commits {
-		contents, _ := br.Read(blob.hash)
+		contents, err := br.Read(blob.hash)
+		if err != nil {
+			logrus.Errorf("error reading blob %v for file %v: %v", blob.hash, blob.filePath, err)
+			readErrors = append(readErrors, BlobReadError{Path: blob.filePath, Commits: blobsInCommits.commits[blob], Err: err})
+			continue
+		}
 		newAddition := gitrepo.NewScannerAddition(blob.filePath, blobsInCommits.commits[blob], contents)
 		additions = append(additions, newAddition)
 	}
 
-	return additions
+	return additions, readErrors
 }
 
 func getBlobsInCommit(ignoreHistory bool) BlobsInCommits {

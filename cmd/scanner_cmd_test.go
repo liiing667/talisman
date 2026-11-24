@@ -2,12 +2,49 @@ package main
 
 import (
 	"os"
+	"path/filepath"
+	"strings"
 	"talisman/git_testing"
+	"talisman/gitrepo"
 	"talisman/talismanrc"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 )
+
+func TestScannerCmdFailsWhenBlobExceedsMaxReadableSize(t *testing.T) {
+	git_testing.DoInTempGitRepo(func(git *git_testing.GitTesting) {
+		git.SetupBaselineFiles("simple-file")
+		oversizedContents := strings.Repeat("a", gitrepo.DefaultMaxBlobSize+1)
+		err := os.WriteFile(filepath.Join(git.Root(), "big-file.txt"), []byte(oversizedContents), 0644)
+		assert.NoError(t, err)
+		git.AddAndcommit("*", "added oversized file")
+		os.Chdir(git.Root())
+
+		scannerCmd := NewScannerCmd(true, &talismanrc.TalismanRC{}, git.Root())
+		scannerCmd.Run()
+		assert.Equal(t, 1, scannerCmd.exitStatus(), "Expected ScannerCmd.exitStatus() to return 1 since an oversized blob could not be scanned")
+		assert.True(t, scannerCmd.results.HasFailures(), "Expected failures to be recorded for the oversized blob")
+	})
+}
+
+func TestScannerCmdFailsWhenGitObjectCannotBeRead(t *testing.T) {
+	git_testing.DoInTempGitRepo(func(git *git_testing.GitTesting) {
+		git.SetupBaselineFiles("simple-file")
+		git.CreateFileWithContents("corrupt-me.txt", "contents that will become unreadable")
+		git.AddAndcommit("*", "added file that will lose its object")
+
+		blobDetails := git.GetBlobDetails("corrupt-me.txt") // "<hash> corrupt-me.txt"
+		blobHash := strings.Split(blobDetails, " ")[0]
+		looseObjectPath := filepath.Join(git.Root(), ".git", "objects", blobHash[:2], blobHash[2:])
+		assert.NoError(t, os.Remove(looseObjectPath), "expected to be able to remove the loose object to simulate corruption")
+		os.Chdir(git.Root())
+
+		scannerCmd := NewScannerCmd(true, &talismanrc.TalismanRC{}, git.Root())
+		scannerCmd.Run()
+		assert.Equal(t, 1, scannerCmd.exitStatus(), "Expected ScannerCmd.exitStatus() to return 1 since a git object could not be read")
+	})
+}
 
 func TestScannerCmdRunsSuccessfully(t *testing.T) {
 	git_testing.DoInTempGitRepo(func(git *git_testing.GitTesting) {

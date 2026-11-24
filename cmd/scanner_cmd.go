@@ -1,10 +1,12 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"talisman/detector"
 	"talisman/detector/helpers"
+	"talisman/detector/severity"
 	"talisman/gitrepo"
 	"talisman/report"
 	"talisman/scanner"
@@ -20,6 +22,7 @@ const (
 
 type ScannerCmd struct {
 	additions       []gitrepo.Addition
+	readErrors      []scanner.BlobReadError
 	results         *helpers.DetectionResults
 	reportDirectory string
 	ignoreEvaluator helpers.IgnoreEvaluator
@@ -30,6 +33,8 @@ type ScannerCmd struct {
 func (s *ScannerCmd) Run() int {
 	fmt.Printf("\n\n")
 	utility.CreateArt("Running Scan..")
+
+	s.recordBlobReadErrors()
 
 	additionsToScan := s.tRC.RemoveScopedFiles(s.additions)
 
@@ -44,8 +49,22 @@ func (s *ScannerCmd) Run() int {
 	return s.exitStatus()
 }
 
+// recordBlobReadErrors turns blobs that could not be read while scanning the
+// history into failures, so that a partially read repository never produces a
+// success report.
+func (s *ScannerCmd) recordBlobReadErrors() {
+	for _, readError := range s.readErrors {
+		logr.Errorf("unable to scan file %q: %v", readError.Path, readError.Err)
+		category := "error"
+		if errors.Is(readError.Err, gitrepo.ErrBlobTooLarge) {
+			category = "filesize"
+		}
+		s.results.Fail(gitrepo.FilePath(readError.Path), category, fmt.Sprintf("The file %q could not be scanned: %v", readError.Path, readError.Err), readError.Commits, severity.High)
+	}
+}
+
 func (s *ScannerCmd) exitStatus() int {
-	if s.results.HasFailures() {
+	if s.results.HasFailures() || len(s.readErrors) > 0 {
 		return EXIT_FAILURE
 	}
 	return EXIT_SUCCESS
@@ -55,13 +74,14 @@ func (s *ScannerCmd) exitStatus() int {
 func NewScannerCmd(ignoreHistory bool, tRC *talismanrc.TalismanRC, reportDirectory string) *ScannerCmd {
 	repoRoot, _ := os.Getwd()
 	reader := gitrepo.NewBatchGitObjectHashReader(repoRoot)
-	additions := scanner.GetAdditions(ignoreHistory, reader)
+	additions, readErrors := scanner.GetAdditions(ignoreHistory, reader)
 	ignoreEvaluator := helpers.ScanHistoryEvaluator()
 	if ignoreHistory {
 		ignoreEvaluator = helpers.BuildIgnoreEvaluator("default", tRC, gitrepo.RepoLocatedAt(repoRoot))
 	}
 	return &ScannerCmd{
 		additions:       additions,
+		readErrors:      readErrors,
 		results:         helpers.NewDetectionResults(),
 		reportDirectory: reportDirectory,
 		ignoreEvaluator: ignoreEvaluator,

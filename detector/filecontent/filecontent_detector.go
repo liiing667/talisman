@@ -102,6 +102,7 @@ func (fc *FileContentDetector) Test(comparator helpers.IgnoreEvaluator, currentA
 
 	contents := make(chan content, 512)
 	ignoredFilePaths := make(chan gitrepo.FilePath, len(currentAdditions))
+	oversizedFilePaths := make(chan gitrepo.FilePath, len(currentAdditions))
 
 	waitGroup := &sync.WaitGroup{}
 	waitGroup.Add(len(currentAdditions))
@@ -111,6 +112,19 @@ func (fc *FileContentDetector) Test(comparator helpers.IgnoreEvaluator, currentA
 			defer additionCompletionCallback()
 			if comparator.ShouldIgnore(addition, "filecontent") {
 				ignoredFilePaths <- addition.Path
+				return
+			}
+
+			//Enforce the size budget before running any content detection:
+			//oversized files are not scanned and are surfaced as warnings
+			//instead of being silently treated as clean.
+			if len(addition.Data) > gitrepo.DefaultMaxBlobSize {
+				log.WithFields(log.Fields{
+					"filePath": addition.Path,
+					"fileSize": len(addition.Data),
+					"maxSize":  gitrepo.DefaultMaxBlobSize,
+				}).Info("Skipping file content checks as the file is larger than the maximum scannable size.")
+				oversizedFilePaths <- addition.Path
 				return
 			}
 
@@ -134,9 +148,10 @@ func (fc *FileContentDetector) Test(comparator helpers.IgnoreEvaluator, currentA
 	go func() {
 		waitGroup.Wait()
 		close(ignoredFilePaths)
+		close(oversizedFilePaths)
 		close(contents)
 	}()
-	for ignoredChanHasMore, contentChanHasMore := true, true; ignoredChanHasMore || contentChanHasMore; {
+	for ignoredChanHasMore, oversizedChanHasMore, contentChanHasMore := true, true, true; ignoredChanHasMore || oversizedChanHasMore || contentChanHasMore; {
 		select {
 		case ignoredFilePath, hasMore := <-ignoredFilePaths:
 			log.Debugf("Processing results for ignored file %v", ignoredFilePath)
@@ -145,6 +160,13 @@ func (fc *FileContentDetector) Test(comparator helpers.IgnoreEvaluator, currentA
 				continue
 			}
 			processIgnoredFilepath(ignoredFilePath, result)
+		case oversizedFilePath, hasMore := <-oversizedFilePaths:
+			log.Debugf("Processing results for oversized file %v", oversizedFilePath)
+			if !hasMore {
+				oversizedChanHasMore = false
+				continue
+			}
+			processOversizedFilepath(oversizedFilePath, result)
 		case c, hasMore := <-contents:
 			log.Debugf("Processing results for file %v", c.path)
 			if !hasMore {
@@ -161,6 +183,13 @@ func processIgnoredFilepath(path gitrepo.FilePath, result *helpers.DetectionResu
 		"filePath": path,
 	}).Info("Ignoring addition as it was specified to be ignored.")
 	result.Ignore(path, "filecontent")
+}
+
+func processOversizedFilepath(path gitrepo.FilePath, result *helpers.DetectionResults) {
+	log.WithFields(log.Fields{
+		"filePath": path,
+	}).Info("File was not scanned for file content as it exceeds the maximum scannable size.")
+	result.Warn(path, "filecontent", fmt.Sprintf("The file %q was not scanned for file content because it is larger than the maximum scannable size of %d bytes", path, gitrepo.DefaultMaxBlobSize), []string{}, severity.Low)
 }
 
 func processContent(c content, threshold severity.Severity, result *helpers.DetectionResults) {
