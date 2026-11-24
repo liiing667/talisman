@@ -154,9 +154,97 @@ func TestShouldIgnoreIfErrorIsBelowThreshold(t *testing.T) {
 	assert.True(t, results.HasWarnings(), "Expected file %s to having warnings", fileName)
 }
 
+func TestShouldFlagFileNamesThatPlatformsFoldOntoSensitiveNames(t *testing.T) {
+	// Windows (and macOS by default) fold case and strip trailing dots and
+	// spaces, so each of these is the same on-disk file as the sensitive
+	// name it folds to, no matter which view a scanning mode observes.
+	shouldFail("CREDENTIALS.XML", "^credentials\\.xml$", severity.Low, t)
+	shouldFail("Credentials.Xml", "^credentials\\.xml$", severity.Low, t)
+	shouldFail("credentials.xml.", "^credentials\\.xml$", severity.Low, t)
+	shouldFail("credentials.xml ", "^credentials\\.xml$", severity.Low, t)
+	shouldFail("secrets.pem.", "^.+\\.pem$", severity.Low, t)
+	shouldFail("secrets.pem ", "^.+\\.pem$", severity.Low, t)
+	shouldFail("secrets.pem. ", "^.+\\.pem$", severity.Low, t)
+	shouldFail("SECRETS.PEM", "^.+\\.pem$", severity.Low, t)
+	shouldFail("ID_RSA.", "^.+_rsa$", severity.Low, t)
+	shouldFail("FOO.PPK ", "^.+\\.ppk$", severity.Low, t)
+	shouldFail(".BASHRC.", "^\\.?(bash|zsh)rc$", severity.Low, t)
+	shouldFail("LocalSettings.php.", "^LocalSettings.php$", severity.Low, t)
+}
+
+func TestShouldNotFlagLegitimateCaseSensitiveLinuxFilesOrOrdinaryFiles(t *testing.T) {
+	// On Linux these are legitimately distinct files whose folded identity
+	// does not correspond to any sensitive name; folding must not hurt them.
+	shouldNotFail("localsettings.php", t)   // distinct from LocalSettings.php
+	shouldNotFail("LOCALSETTINGS.PHP", t)   // distinct from LocalSettings.php
+	shouldNotFail("credentialsxml", t)      // folding must not invent dots
+	shouldNotFail("credentials.xml.bak", t) // folding must not strip interiors
+	shouldNotFail("secrets.pem.bak", t)
+
+	// Ordinary files stay clean whether or not they contain upper case.
+	shouldNotFail("README.md", t)
+	shouldNotFail("Makefile", t)
+	shouldNotFail("LICENSE", t)
+	shouldNotFail("main.go", t)
+	shouldNotFail("Jenkinsfile", t)
+}
+
+func TestPlatformFoldedViewsOfTheSameFileShareOneDetectionIdentity(t *testing.T) {
+	// Fixed comparison: every platform view of the same file must yield the
+	// same verdict, whether the view arrives folded (as the filesystem
+	// presents it to pattern mode) or verbatim (as the git tree presents it
+	// to pre-push). The boundary is closed iff each group is uniform.
+	fixedComparison := []struct {
+		platformViews []string
+		expectFailure bool
+	}{
+		{[]string{"credentials.xml", "CREDENTIALS.XML", "Credentials.Xml", "credentials.xml.", "credentials.xml "}, true},
+		{[]string{"secrets.pem", "SECRETS.PEM", "Secrets.Pem.", "secrets.pem ", "secrets.pem. "}, true},
+		{[]string{"id_rsa", "ID_RSA", "Id_Rsa."}, true},
+		{[]string{"LocalSettings.php", "LocalSettings.php.", "LocalSettings.php "}, true},
+		{[]string{"localsettings.php", "LOCALSETTINGS.PHP", "localsettings.php.", "LOCALSETTINGS.PHP "}, false},
+		{[]string{"README.md", "Readme.MD", "README.md "}, false},
+		{[]string{"main.go", "MAIN.GO", "Main.Go."}, false},
+	}
+
+	for _, group := range fixedComparison {
+		for _, fileName := range group.platformViews {
+			results := helpers.NewDetectionResults()
+			DefaultFileNameDetector(severity.Low).
+				Test(defaultIgnoreEvaluator, additionsNamed(fileName), talismanRC, results, func() {})
+			assert.Equal(t, group.expectFailure, results.HasFailures(),
+				"Expected platform views %v to share one detection identity, but %q disagreed", group.platformViews, fileName)
+		}
+	}
+}
+
+func TestFailureReportsRetainTheOriginalPathForDisposition(t *testing.T) {
+	results := helpers.NewDetectionResults()
+	fileName := "CREDENTIALS.XML"
+
+	DefaultFileNameDetector(severity.Low).
+		Test(defaultIgnoreEvaluator, additionsNamed(fileName), talismanRC, results, func() {})
+
+	assert.True(t, results.HasFailures(), "Expected folded file name %s to fail", fileName)
+	if assert.Len(t, results.Results, 1) {
+		assert.Equal(t, gitrepo.FilePath(fileName), results.Results[0].Filename,
+			"Expected the original path to be preserved for disposition")
+	}
+}
+
 func shouldFail(fileName, pattern string, threshold severity.Severity, t *testing.T) {
 	shouldFailWithSpecificPattern(fileName, pattern, threshold, t)
 	shouldFailWithDefaultDetector(fileName, pattern, threshold, t)
+}
+
+func shouldNotFail(fileName string, t *testing.T) {
+	results := helpers.NewDetectionResults()
+	DefaultFileNameDetector(severity.Low).
+		Test(defaultIgnoreEvaluator, additionsNamed(fileName), talismanRC, results, func() {})
+
+	assert.False(t,
+		results.HasFailures(),
+		"Expected file %s to not fail the check against the default detector", fileName)
 }
 
 func shouldIgnoreFilesWhichWouldOtherwiseTriggerErrors(

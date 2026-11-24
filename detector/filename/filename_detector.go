@@ -3,6 +3,7 @@ package filename
 import (
 	"fmt"
 	"regexp"
+	"strings"
 	"talisman/detector/detector"
 	"talisman/detector/helpers"
 	"talisman/detector/severity"
@@ -94,7 +95,7 @@ func (fd FileNameDetector) Test(comparator helpers.IgnoreEvaluator, currentAddit
 			continue
 		}
 		for _, patternWithSeverity := range fd.flagPatterns {
-			if patternWithSeverity.Pattern.MatchString(string(addition.Name)) {
+			if matchesAnyPlatformView(patternWithSeverity.Pattern, string(addition.Name)) {
 				log.WithFields(log.Fields{
 					"filePath": addition.Path,
 					"pattern":  patternWithSeverity.Pattern,
@@ -109,4 +110,43 @@ func (fd FileNameDetector) Test(comparator helpers.IgnoreEvaluator, currentAddit
 		}
 		additionCompletionCallback()
 	}
+}
+
+// matchesAnyPlatformView reports whether the pattern matches the file name
+// either verbatim or under the identity that case-insensitive,
+// trailing-dot/space-stripping platforms (Windows, and macOS by default)
+// would fold it to.
+//
+// A commit created on such a platform may record names like "CREDENTIALS.XML"
+// or "secrets.pem." which are the very same on-disk file as their folded
+// identity ("credentials.xml", "secrets.pem"). Checking both views gives those
+// names the same detection identity no matter which view a scanning mode
+// (pre-push, pre-commit, pattern, scan) happens to observe, while the
+// verbatim check keeps genuinely case-sensitive names (e.g. LocalSettings.php
+// on Linux) matched - and only matched - by their exact-case patterns.
+func matchesAnyPlatformView(pattern *regexp.Regexp, name string) bool {
+	for _, view := range platformViews(name) {
+		if pattern.MatchString(view) {
+			return true
+		}
+	}
+	return false
+}
+
+// platformViews returns the distinct names under which platforms may present
+// the same file: the name verbatim, the name with trailing dots and spaces
+// stripped (Windows does not preserve them), and that name case-folded
+// (Windows and, by default, macOS are case-insensitive). Views that collapse
+// to the verbatim name or to the empty string are omitted.
+func platformViews(name string) []string {
+	trimmedName := strings.TrimRight(name, ". ")
+	foldedName := strings.ToLower(trimmedName)
+	views := []string{name}
+	if trimmedName != "" && trimmedName != name {
+		views = append(views, trimmedName)
+	}
+	if foldedName != "" && foldedName != name && foldedName != trimmedName {
+		views = append(views, foldedName)
+	}
+	return views
 }
