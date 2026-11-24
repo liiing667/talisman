@@ -1,6 +1,8 @@
 package checksumcalculator
 
 import (
+	"os"
+	"path/filepath"
 	"talisman/gitrepo"
 	"talisman/utility"
 	"testing"
@@ -116,4 +118,28 @@ func TestDefaultChecksumCalculator_SuggestTalismanRC(t *testing.T) {
 
 		assert.Equal(t, expectedCC, actualCC)
 	})
+}
+
+func TestChecksumCalculatorDoesNotReadThroughSymbolicLinkParent(t *testing.T) {
+	outsideDir := t.TempDir()
+	externalFile := filepath.Join(outsideDir, "secret")
+	assert.NoError(t, os.WriteFile(externalFile, []byte("external content"), 0600))
+
+	repoDir := t.TempDir()
+	parentLink := filepath.Join(repoDir, "linked")
+	if err := os.Symlink(outsideDir, parentLink); err != nil {
+		t.Skipf("symbolic links are not available: %v", err)
+	}
+	filePath := filepath.Join(parentLink, "secret")
+
+	gitAdditions := []gitrepo.Addition{{
+		Path: gitrepo.FilePath(filePath),
+		Name: "secret",
+	}}
+	cc := NewChecksumCalculator(defaultSHA256Hasher, gitAdditions)
+
+	actualCC := cc.CalculateCollectiveChecksumForPattern("*")
+	expectedCC := utility.CollectiveSHA256HashForContent(filePath, []byte{})
+
+	assert.Equal(t, expectedCC, actualCC)
 }

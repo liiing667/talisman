@@ -53,8 +53,22 @@ func (r *runner) printReport(promptContext prompt.PromptContext) {
 		fmt.Println(r.results.ReportWarnings())
 	}
 	if r.results.HasIgnores() || r.results.HasFailures() {
-		r.results.Report(promptContext, r.mode)
+		r.results.ReportWithContent(promptContext, r.mode, r.capturedContents())
 	}
+}
+
+// capturedContents returns the file bytes that were actually scanned. Pattern
+// mode is the mode where an Addition holds the complete contents of a working
+// tree file, so its checksum suggestion can be tied to exactly that snapshot.
+func (r *runner) capturedContents() map[string][]byte {
+	if r.mode != "pattern" {
+		return nil
+	}
+	contents := make(map[string][]byte, len(r.additions))
+	for _, addition := range r.additions {
+		contents[string(addition.Path)] = addition.Data
+	}
+	return contents
 }
 
 func (r *runner) exitStatus() int {

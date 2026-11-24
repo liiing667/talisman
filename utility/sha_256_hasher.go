@@ -50,17 +50,31 @@ func hashByte(contentPtr *[]byte) string {
 func collectiveSHA256Hash(paths []string, FileReader func(string) ([]byte, error)) string {
 	var finHash = ""
 	for _, path := range paths {
-		sbyte := []byte(finHash)
-		concatBytes := hashByte(&sbyte)
-		nameByte := []byte(path)
-		nameHash := hashByte(&nameByte)
 		fileBytes, _ := FileReader(path)
-		fileHash := hashByte(&fileBytes)
-		finHash = concatBytes + fileHash + nameHash
+		finHash = hashPathAndContent(finHash, path, fileBytes)
 	}
 	c := []byte(finHash)
 	m := hashByte(&c)
 	return m
+}
+
+// CollectiveSHA256HashForContent returns the collective hash for a path whose
+// content has already been read. It uses the same algorithm as
+// CollectiveSHA256Hash, allowing callers to bind an already-captured file
+// snapshot to the checksum they report instead of re-reading the path.
+func CollectiveSHA256HashForContent(path string, content []byte) string {
+	finHash := hashPathAndContent("", path, content)
+	c := []byte(finHash)
+	return hashByte(&c)
+}
+
+func hashPathAndContent(previousHash string, path string, content []byte) string {
+	previousHashBytes := []byte(previousHash)
+	concatBytes := hashByte(&previousHashBytes)
+	nameByte := []byte(path)
+	nameHash := hashByte(&nameByte)
+	contentHash := hashByte(&content)
+	return concatBytes + contentHash + nameHash
 }
 
 var hashers = make(map[string]SHA256Hasher)

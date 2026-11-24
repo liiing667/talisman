@@ -7,8 +7,6 @@ import (
 	"os"
 	"path"
 
-	log "github.com/sirupsen/logrus"
-
 	figure "github.com/common-nighthawk/go-figure"
 )
 
@@ -97,12 +95,4 @@ func IsFileSymlink(path string) bool {
 		return false
 	}
 	return fileMetadata.Mode()&os.ModeSymlink != 0
-}
-
-func SafeReadFile(path string) ([]byte, error) {
-	if IsFileSymlink(path) {
-		log.Debug("Symlink was detected! Not following symlink ", path)
-		return []byte{}, nil
-	}
-	return ioutil.ReadFile(path)
 }

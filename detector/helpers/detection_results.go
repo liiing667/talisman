@@ -231,6 +231,13 @@ func (r *DetectionResults) ReportWarnings() string {
 
 // Report returns a string documenting the various failures and ignored files for the current run
 func (r *DetectionResults) Report(promptContext prompt.PromptContext, mode string) string {
+	return r.ReportWithContent(promptContext, mode, nil)
+}
+
+// ReportWithContent is Report with an optional set of file contents captured
+// earlier in the run. When content is available for a failing path, its checksum
+// is calculated from that same snapshot rather than by re-reading the path.
+func (r *DetectionResults) ReportWithContent(promptContext prompt.PromptContext, mode string, contents map[string][]byte) string {
 	var result string
 	var filePathsForFailures []string
 	var data [][]string
@@ -254,16 +261,21 @@ func (r *DetectionResults) Report(promptContext prompt.PromptContext, mode strin
 		table.AppendBulk(data)
 		table.Render()
 		fmt.Println()
-		r.suggestTalismanRC(filePathsForFailures, promptContext, mode)
+		r.suggestTalismanRC(filePathsForFailures, promptContext, mode, contents)
 	}
 	return result
 }
 
-func (r *DetectionResults) suggestTalismanRC(filePaths []string, promptContext prompt.PromptContext, mode string) {
+func (r *DetectionResults) suggestTalismanRC(filePaths []string, promptContext prompt.PromptContext, mode string, contents map[string][]byte) {
 	var entriesToAdd []talismanrc.FileIgnoreConfig
 	hasher := utility.MakeHasher(mode, ".")
 	for _, filePath := range filePaths {
-		currentChecksum := hasher.CollectiveSHA256Hash([]string{filePath})
+		var currentChecksum string
+		if content, ok := contents[filePath]; ok {
+			currentChecksum = utility.CollectiveSHA256HashForContent(filePath, content)
+		} else {
+			currentChecksum = hasher.CollectiveSHA256Hash([]string{filePath})
+		}
 		fileIgnoreConfig := talismanrc.IgnoreFileWithChecksum(filePath, currentChecksum)
 		entriesToAdd = append(entriesToAdd, fileIgnoreConfig)
 	}
