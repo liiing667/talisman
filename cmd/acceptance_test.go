@@ -85,6 +85,82 @@ func TestAddingSecretKeyShouldExitOne(t *testing.T) {
 	})
 }
 
+func TestPushWithMultipleOutgoingRefsFailsWhenAnyRefContainsASecret(t *testing.T) {
+	git_testing.DoInTempGitRepo(func(git *git_testing.GitTesting) {
+		git.SetupBaselineFiles("simple-file")
+		firstCommit := git.LatestCommit()
+
+		// The first outgoing ref only contains the clean baseline commit...
+		git.CreateFileWithContents("safe-file", "nothing suspicious here")
+		git.AddAndcommit("safe-file", "add safe file")
+		cleanCommit := git.LatestCommit()
+
+		// ...while a later outgoing ref carries a secret that must not be
+		// able to hide behind the first ref being checked.
+		git.CreateFileWithContents("private.pem", "secret")
+		git.AddAndcommit("private.pem", "add private key")
+		secretCommit := git.LatestCommit()
+
+		assert.Equal(t, 1,
+			runTalismanInPrePushModeWithStdIn(git, mockMultiRefStdIn(
+				mockRefLine("refs/heads/clean-branch", cleanCommit, "refs/heads/clean-branch", firstCommit),
+				mockRefLine("refs/heads/secret-branch", secretCommit, "refs/heads/secret-branch", firstCommit),
+			)),
+			"Expected run() to return 1 because the second outgoing ref contains a secret even though the first ref is clean")
+	})
+}
+
+func TestPushWithMultipleCleanOutgoingRefsPassesAndReportsEachFileOnce(t *testing.T) {
+	git_testing.DoInTempGitRepo(func(git *git_testing.GitTesting) {
+		git.SetupBaselineFiles("simple-file")
+		firstCommit := git.LatestCommit()
+
+		git.CreateFileWithContents("safe-file", "nothing suspicious here")
+		git.AddAndcommit("safe-file", "add safe file")
+		latestCommit := git.LatestCommit()
+
+		// Two refs share the same commits; the shared additions must be
+		// validated only once instead of polluting the report.
+		assert.Equal(t, 0,
+			runTalismanInPrePushModeWithStdIn(git, mockMultiRefStdIn(
+				mockRefLine("refs/heads/first-branch", latestCommit, "refs/heads/first-branch", firstCommit),
+				mockRefLine("refs/tags/v1.0.0", latestCommit, "refs/tags/v1.0.0", firstCommit),
+			)),
+			"Expected run() to return 0 when none of the outgoing refs contain secrets")
+	})
+}
+
+func TestPushMixingDeletedAndUpdatedRefsOnlyChecksOutgoingAdditions(t *testing.T) {
+	git_testing.DoInTempGitRepo(func(git *git_testing.GitTesting) {
+		git.SetupBaselineFiles("simple-file")
+		firstCommit := git.LatestCommit()
+
+		git.CreateFileWithContents("private.pem", "secret")
+		git.AddAndcommit("private.pem", "add private key")
+		latestCommit := git.LatestCommit()
+
+		assert.Equal(t, 1,
+			runTalismanInPrePushModeWithStdIn(git, mockMultiRefStdIn(
+				mockRefLine("refs/heads/deleted-branch", EmptySha, "refs/heads/deleted-branch", firstCommit),
+				mockRefLine("refs/heads/secret-branch", latestCommit, "refs/heads/secret-branch", firstCommit),
+			)),
+			"Expected run() to return 1 because the updated ref contains a secret and the deleted ref cannot mask it")
+	})
+}
+
+func TestPushWithOnlyDeletedRefsPassesWithoutContaminatingTheReport(t *testing.T) {
+	git_testing.DoInTempGitRepo(func(git *git_testing.GitTesting) {
+		git.SetupBaselineFiles("simple-file")
+		firstCommit := git.LatestCommit()
+
+		assert.Equal(t, 0,
+			runTalismanInPrePushModeWithStdIn(git, mockMultiRefStdIn(
+				mockRefLine("refs/heads/deleted-branch", EmptySha, "refs/heads/deleted-branch", firstCommit),
+			)),
+			"Expected run() to return 0 because a push that only deletes refs has no additions to validate")
+	})
+}
+
 func TestAddingSecretKeyAsFileContentShouldExitOne(t *testing.T) {
 
 	git_testing.DoInTempGitRepo(func(git *git_testing.GitTesting) {
@@ -414,4 +490,24 @@ func runTalisman(git *git_testing.GitTesting) int {
 
 func mockStdIn(oldSha string, newSha string) io.Reader {
 	return strings.NewReader(fmt.Sprintf("master %s master %s\n", newSha, oldSha))
+}
+
+func runTalismanInPrePushModeWithStdIn(git *git_testing.GitTesting, stdIn io.Reader) int {
+	options.Debug = true
+	options.GitHook = PrePush
+	wd, _ := os.Getwd()
+	os.Chdir(git.Root())
+	defer func() { os.Chdir(wd) }()
+	prompter := prompt.NewPrompt()
+	promptContext := prompt.NewPromptContext(false, prompter)
+	talismanInput = stdIn
+	return run(promptContext)
+}
+
+func mockRefLine(localRef, localCommit, remoteRef, remoteCommit string) string {
+	return fmt.Sprintf("%s %s %s %s", localRef, localCommit, remoteRef, remoteCommit)
+}
+
+func mockMultiRefStdIn(refLines ...string) io.Reader {
+	return strings.NewReader(strings.Join(refLines, "\n") + "\n")
 }
