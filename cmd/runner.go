@@ -33,7 +33,13 @@ func (r *runner) Run(tRC *talismanrc.TalismanRC, promptContext prompt.PromptCont
 	repo := gitrepo.RepoLocatedAt(wd)
 	ie := helpers.BuildIgnoreEvaluator(r.mode, tRC, repo)
 
-	setCustomSeverities(tRC)
+	restoreDefaultSeverities, err := applyCustomSeverities(tRC)
+	if err != nil {
+		fmt.Println(err)
+		return EXIT_FAILURE
+	}
+	defer restoreDefaultSeverities()
+
 	additionsToScan := tRC.RemoveScopedFiles(r.additions)
 
 	detector.DefaultChain(tRC, ie).Test(additionsToScan, tRC, r.results)
@@ -42,10 +48,19 @@ func (r *runner) Run(tRC *talismanrc.TalismanRC, promptContext prompt.PromptCont
 	return exitStatus
 }
 
-func setCustomSeverities(tRC *talismanrc.TalismanRC) {
+// applyCustomSeverities validates the custom severity overrides configured in
+// .talismanrc and applies them only for the duration of the current run. It
+// returns a function that restores the default severity configuration, so
+// that overrides can never leak into subsequent scans within the same process.
+func applyCustomSeverities(tRC *talismanrc.TalismanRC) (func(), error) {
+	if err := tRC.ValidateCustomSeverities(); err != nil {
+		return nil, fmt.Errorf("\n\x1b[1m\x1b[31mInvalid custom severity configuration in .talismanrc: %v\x1b[0m\x1b[0m", err)
+	}
+	defaultSeverityConfiguration := severity.DefaultSeverityConfiguration()
 	for _, cs := range tRC.CustomSeverities {
 		severity.SeverityConfiguration[cs.Detector] = cs.Severity
 	}
+	return func() { severity.SeverityConfiguration = defaultSeverityConfiguration }, nil
 }
 
 func (r *runner) printReport(promptContext prompt.PromptContext) {

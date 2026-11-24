@@ -122,6 +122,35 @@ custom_severities:
 		talismanRC, _ := talismanRCFromYaml(talismanRCContents)
 		assert.Equal(t, talismanRC.CustomSeverities, []CustomSeverityConfig{{Detector: "Base64Content", Severity: severity.Low}})
 	})
+
+	t.Run("Should fail closed on custom severities for unknown detectors", func(t *testing.T) {
+		talismanRCContents := []byte(`
+custom_severities:
+- detector: NotARealDetector
+  severity: low
+`)
+		_, err := talismanRCFromYaml(talismanRCContents)
+		assert.Error(t, err, "Expected an unknown detector in custom_severities to fail before any scan")
+	})
+
+	t.Run("Should fail closed on custom severities with missing severity level", func(t *testing.T) {
+		talismanRCContents := []byte(`
+custom_severities:
+- detector: Base64Content
+`)
+		_, err := talismanRCFromYaml(talismanRCContents)
+		assert.Error(t, err, "Expected a missing severity level in custom_severities to fail before any scan")
+	})
+
+	t.Run("Should fail closed on custom severities with illegal severity level", func(t *testing.T) {
+		talismanRCContents := []byte(`
+custom_severities:
+- detector: Base64Content
+  severity: critical
+`)
+		_, err := talismanRCFromYaml(talismanRCContents)
+		assert.Error(t, err, "Expected an illegal severity level in custom_severities to fail before any scan")
+	})
 }
 
 func TestShouldIgnoreUnformattedFiles(t *testing.T) {

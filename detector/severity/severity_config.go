@@ -1,5 +1,7 @@
 package severity
 
+import "fmt"
+
 var SeverityConfiguration = map[string]Severity{
 	"ConsumerKeyPattern":        High,
 	"ConsumerSecretParrern":     High,
@@ -56,4 +58,28 @@ var SeverityConfiguration = map[string]Severity{
 	"GNUCash":                   Low,
 	"PasswordPhrasePattern":     Low,
 	"LargeFileSize":             Low,
+}
+
+// DefaultSeverityConfiguration returns a copy of the built-in severity
+// configuration. Per-run overrides should be applied on top of this copy (or
+// restored from it) so that the defaults themselves are never mutated.
+func DefaultSeverityConfiguration() map[string]Severity {
+	defaultConfiguration := make(map[string]Severity, len(SeverityConfiguration))
+	for detector, severity := range SeverityConfiguration {
+		defaultConfiguration[detector] = severity
+	}
+	return defaultConfiguration
+}
+
+// ValidateCustomSeverity ensures that a custom severity override refers to a
+// known detector and uses one of the supported severity levels (low, medium,
+// high). Anything else must fail closed before a scan starts.
+func ValidateCustomSeverity(detector string, customSeverity Severity) error {
+	if _, known := SeverityConfiguration[detector]; !known {
+		return fmt.Errorf("unknown detector %q in custom severity configuration", detector)
+	}
+	if customSeverity < Low || customSeverity > High {
+		return fmt.Errorf("invalid severity %q for detector %q in custom severity configuration: must be one of low, medium or high", String(customSeverity), detector)
+	}
+	return nil
 }

@@ -56,6 +56,17 @@ func (tRC *TalismanRC) RemoveScopedFiles(additions []gitrepo.Addition) []gitrepo
 	return result
 }
 
+// ValidateCustomSeverities ensures that every custom severity override refers
+// to a known detector and uses a valid severity level.
+func (tRC *TalismanRC) ValidateCustomSeverities() error {
+	for _, customSeverity := range tRC.CustomSeverities {
+		if err := severity.ValidateCustomSeverity(customSeverity.Detector, customSeverity.Severity); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // AddIgnores inserts the specified FileIgnoreConfigs to an existing .talismanrc file, or creates one if it doesn't exist.
 func (tRC *TalismanRC) AddIgnores(entriesToAdd []FileIgnoreConfig) {
 	if len(entriesToAdd) > 0 {

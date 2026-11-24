@@ -56,6 +56,30 @@ fileignoreconfig:
   ignore_detectors: []
 `
 
+const talismanRCWithThresholdAndDowngradedHexContent = `
+threshold: medium
+custom_severities:
+- detector: HexContent
+  severity: low
+`
+
+const talismanRCWithThresholdOnly = `
+threshold: medium
+`
+
+const talismanRCWithUnknownDetectorCustomSeverity = `
+custom_severities:
+- detector: NotARealDetector
+  severity: low
+`
+
+const talismanRCWithMissingCustomSeverityLevel = `
+custom_severities:
+- detector: HexContent
+`
+
+const hexEncodedSecret = "68656C6C6F20776F726C6421"
+
 func init() {
 	git_testing.Logger = logrus.WithField("Environment", "Debug")
 	git_testing.Logger.Debug("Acceptance test started")
@@ -398,6 +422,51 @@ func runTalismanInPrePushMode(git *git_testing.GitTesting) int {
 	options.Debug = true
 	options.GitHook = PrePush
 	return runTalisman(git)
+}
+
+func resetOptionsForPreCommitMode() {
+	options.Debug = false
+	options.GitHook = PreCommit
+	options.Scan = false
+	options.ScanWithHtml = false
+	options.Pattern = ""
+	options.Checksum = ""
+	options.IgnoreHistory = false
+}
+
+func TestCustomSeverityOverrideShouldApplyOnlyToTheCurrentRun(t *testing.T) {
+	git_testing.DoInTempGitRepo(func(git *git_testing.GitTesting) {
+		resetOptionsForPreCommitMode()
+		git.SetupBaselineFiles("simple-file")
+		git.CreateFileWithContents("hex_secret.txt", hexEncodedSecret)
+		git.CreateFileWithContents(".talismanrc", talismanRCWithThresholdAndDowngradedHexContent)
+		git.Add("*")
+		assert.Equal(t, 0, runTalisman(git), "Expected run() to return 0 as HexContent is downgraded to a warning for this run only")
+
+		git.OverwriteFileContent(".talismanrc", talismanRCWithThresholdOnly)
+		git.Add("*")
+		assert.Equal(t, 1, runTalisman(git), "Expected run() to return 1 as the previous run's severity override must not leak into this unconfigured run")
+	})
+}
+
+func TestTalismanFailsClosedForUnknownDetectorInCustomSeverities(t *testing.T) {
+	git_testing.DoInTempGitRepo(func(git *git_testing.GitTesting) {
+		resetOptionsForPreCommitMode()
+		git.SetupBaselineFiles("simple-file")
+		git.CreateFileWithContents(".talismanrc", talismanRCWithUnknownDetectorCustomSeverity)
+		git.Add("*")
+		assert.Equal(t, 1, runTalisman(git), "Expected run() to return 1 and fail before scanning as custom severity refers to an unknown detector")
+	})
+}
+
+func TestTalismanFailsClosedForMissingSeverityLevelInCustomSeverities(t *testing.T) {
+	git_testing.DoInTempGitRepo(func(git *git_testing.GitTesting) {
+		resetOptionsForPreCommitMode()
+		git.SetupBaselineFiles("simple-file")
+		git.CreateFileWithContents(".talismanrc", talismanRCWithMissingCustomSeverityLevel)
+		git.Add("*")
+		assert.Equal(t, 1, runTalisman(git), "Expected run() to return 1 and fail before scanning as custom severity has no valid level")
+	})
 }
 
 func runTalisman(git *git_testing.GitTesting) int {

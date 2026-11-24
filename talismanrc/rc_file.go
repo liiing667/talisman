@@ -37,6 +37,11 @@ func talismanRCFromYaml(fileContents []byte) (*TalismanRC, error) {
 		fmt.Println(fmt.Errorf("\n\x1b[1m\x1b[31mUnable to parse .talismanrc %s. Please ensure it is following the right YAML structure\x1b[0m\x1b[0m", err))
 		return &TalismanRC{}, err
 	}
+	if err := talismanRCFromFile.ValidateCustomSeverities(); err != nil {
+		logr.Errorf("Invalid custom severity configuration in .talismanrc : %v", err)
+		fmt.Println(fmt.Errorf("\n\x1b[1m\x1b[31mInvalid custom severity configuration in .talismanrc: %v\x1b[0m\x1b[0m", err))
+		return &TalismanRC{}, err
+	}
 	if talismanRCFromFile.Version == "" {
 		talismanRCFromFile.Version = DefaultRCVersion
 	}
